@@ -10,6 +10,8 @@ Python SDK for the [Blue Billywig](https://www.bluebillywig.com/) Streaming API 
 - Convenience helpers: top videos, unique viewers, viewcount reach (≥X%), per-video ad stats
 - LineItem version history for resolving which creative ran during a report period
 - Generic entity CRUD: `get`, `list`, `search`, `create`, `update`, `delete`, `action`
+- Version history for any entity via `client.versions(entity, id)`
+- TUS file upload: `upload_file()` and `create_mediaclip()` with S3 multipart support
 - Clean exception hierarchy
 
 ## Installation
@@ -177,6 +179,72 @@ client.delete("mediaclip", "12345", purge=True)
 
 # Entity action
 client.action("mediaclip", "12345", "publish", method="PUT")
+
+# Version history (works for any entity: mediaclip, lineitem, playout, player, ...)
+versions = client.versions("mediaclip", "12345")
+# [{"id": "...", "date": "2026-01-15", "isLatest": False}, ...]
+```
+
+## File uploads (TUS)
+
+The SAPI uses the [TUS protocol](https://tus.io/) backed by S3 multipart upload.
+
+### Upload a file without creating a mediaclip entity
+
+Use this for creatives, thumbnails, subtitle files, and images — anything
+where the entity already exists or is managed separately.
+
+```python
+result = client.upload_file(
+    "/tmp/ad_creative.mp4",
+    use_type="commercial",       # "commercial" (ad) or "editorial" (content)
+    mediaclip_id="12345",        # optional: attach to existing mediaclip
+)
+print(result.tus_upload_id)      # TUS upload ID
+print(result.s3_key)             # S3 object key
+```
+
+### Create a mediaclip with a video file
+
+Full OVP6 workflow: creates the mediaclip entity first, then uploads the file.
+
+```python
+result = client.create_mediaclip(
+    "/tmp/match_recap.mp4",
+    title="Match Recap",
+    description="Highlights from the match",
+    tags=["football", "highlights"],
+    status="draft",              # "draft" or "published"
+    on_progress=lambda done, total: print(f"{done / total * 100:.0f}%"),
+)
+print(result.mediaclip_id)       # e.g. "12345"
+```
+
+### UploadResult
+
+Both methods return an `UploadResult`:
+
+```python
+result.tus_upload_id    # SAPI TUS upload ID
+result.upload_identifier
+result.mediaclip_id     # set only by create_mediaclip()
+result.file_name
+result.file_size        # bytes
+result.content_type
+result.s3_key
+```
+
+### How it works
+
+```
+POST /sapi/tus                    ← create upload, get presigned S3 URLs
+  Upload-Metadata: filename <b64>, filetype <b64> [, mediaclipId <b64>]
+
+PUT  <presigned_url>  (×N parts)  ← upload chunks directly to S3
+  ← collect ETag from each response
+
+POST /sapi/tus/{id}/complete      ← finalise multipart upload
+  [{PartNumber, ETag}, ...]
 ```
 
 ## LineItem version history
@@ -216,8 +284,78 @@ python examples/analytics_export.py
 ## Development
 
 ```bash
+git clone https://github.com/bluebillywig/bb-sapi-python-sdk.git
+cd bb-sapi-python-sdk
 pip install -e ".[dev]"
 pytest
+```
+
+## Publishing to PyPI
+
+### One-time setup
+
+1. Create a [PyPI account](https://pypi.org/account/register/) and enable 2FA.
+
+2. Create an API token at **PyPI → Account settings → API tokens** (scope: entire account for first upload, then restrict to this project).
+
+3. Install build tools:
+
+   ```bash
+   pip install build twine
+   ```
+
+4. Store credentials in `~/.pypirc` (or use `TWINE_USERNAME`/`TWINE_PASSWORD` env vars):
+
+   ```ini
+   [pypi]
+   username = __token__
+   password = pypi-AgEIcHlwaS5vcmc...
+   ```
+
+### Release workflow
+
+1. Bump the version in `pyproject.toml` and `bb_sapi/__init__.py`:
+
+   ```toml
+   # pyproject.toml
+   version = "0.2.0"
+   ```
+
+   ```python
+   # bb_sapi/__init__.py
+   __version__ = "0.2.0"
+   ```
+
+2. Commit and tag:
+
+   ```bash
+   git add pyproject.toml bb_sapi/__init__.py
+   git commit -m "Release v0.2.0"
+   git tag v0.2.0
+   git push && git push --tags
+   ```
+
+3. Build source distribution and wheel:
+
+   ```bash
+   python -m build
+   # produces dist/bb_sapi_python_sdk-0.2.0.tar.gz
+   #          dist/bb_sapi_python_sdk-0.2.0-py3-none-any.whl
+   ```
+
+4. Upload to PyPI:
+
+   ```bash
+   twine upload dist/*
+   ```
+
+5. Verify: `pip install bb-sapi-python-sdk==0.2.0`
+
+### Test on TestPyPI first (optional)
+
+```bash
+twine upload --repository testpypi dist/*
+pip install --index-url https://test.pypi.org/simple/ bb-sapi-python-sdk
 ```
 
 ## License
