@@ -28,6 +28,7 @@ from bb_sapi.auth import HotpAuth
 from bb_sapi.entities.analytics import Analytics
 from bb_sapi.entities.lineitem import LineItem
 from bb_sapi.entities.mediaclip import MediaClip
+from bb_sapi.upload import TusUploader, UploadResult
 from bb_sapi.exceptions import (
     SapiAnalyticsError,
     SapiAuthError,
@@ -76,6 +77,7 @@ class SapiClient:
         self.analytics = Analytics(self)
         self.mediaclip = MediaClip(self)
         self.lineitem = LineItem(self)
+        self._uploader = TusUploader(self)
 
     # ------------------------------------------------------------------
     # Generic entity operations
@@ -261,6 +263,83 @@ class SapiClient:
     ) -> dict[str, Any]:
         """Arbitrary SAPI request for any endpoint not covered above."""
         return self._sapi_request(method, path, json=data, params=params)
+
+    # ------------------------------------------------------------------
+    # TUS file uploads
+    # ------------------------------------------------------------------
+
+    def upload_file(
+        self,
+        file_path: str,
+        *,
+        title: Optional[str] = None,
+        use_type: str = "commercial",
+        mediaclip_id: Optional[str | int] = None,
+        on_progress=None,
+    ) -> "UploadResult":
+        """
+        Upload a file (image, video, audio, subtitle, document) via TUS.
+
+        Does NOT create a mediaclip entity first. Useful for creatives,
+        thumbnails, and subtitle files. For full mediaclip creation use
+        :meth:`create_mediaclip`.
+
+        Args:
+            file_path:    Path to the local file.
+            title:        Display name (defaults to filename without extension).
+            use_type:     ``"commercial"`` (creative) or ``"editorial"`` (content).
+            mediaclip_id: Attach the uploaded file to an existing MediaClip.
+            on_progress:  Optional ``(bytes_uploaded, total_bytes)`` callback.
+
+        Returns:
+            :class:`~bb_sapi.upload.UploadResult`
+        """
+        return self._uploader.upload_file(
+            file_path,
+            title=title,
+            use_type=use_type,
+            mediaclip_id=mediaclip_id,
+            on_progress=on_progress,
+        )
+
+    def create_mediaclip(
+        self,
+        file_path: str,
+        *,
+        title: Optional[str] = None,
+        description: Optional[str] = None,
+        tags: Optional[list[str]] = None,
+        use_type: str = "editorial",
+        status: str = "draft",
+        extra_fields: Optional[dict[str, Any]] = None,
+        on_progress=None,
+    ) -> "UploadResult":
+        """
+        Full mediaclip creation workflow: create entity → TUS → S3 → complete.
+
+        Args:
+            file_path:    Path to the local video/audio file.
+            title:        Display title (defaults to filename without extension).
+            description:  Optional description.
+            tags:         Optional list of tags.
+            use_type:     ``"editorial"`` (content) or ``"commercial"`` (creative).
+            status:       Initial status: ``"draft"`` (default) or ``"published"``.
+            extra_fields: Additional fields for the mediaclip entity.
+            on_progress:  Optional ``(bytes_uploaded, total_bytes)`` callback.
+
+        Returns:
+            :class:`~bb_sapi.upload.UploadResult` including ``mediaclip_id``.
+        """
+        return self._uploader.create_mediaclip(
+            file_path,
+            title=title,
+            description=description,
+            tags=tags,
+            use_type=use_type,
+            status=status,
+            extra_fields=extra_fields,
+            on_progress=on_progress,
+        )
 
     # ------------------------------------------------------------------
     # JWT / Bearer auth (for /v1 endpoints such as ad-stats)

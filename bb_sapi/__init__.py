@@ -1,5 +1,6 @@
 """Blue Billywig SAPI Python SDK."""
 from bb_sapi.client import SapiClient
+from bb_sapi.upload import UploadResult
 from bb_sapi.exceptions import (
     SapiAnalyticsError,
     SapiAuthError,
@@ -12,6 +13,7 @@ from bb_sapi.exceptions import (
 
 __all__ = [
     "SapiClient",
+    "UploadResult",
     "SapiError",
     "SapiHTTPError",
     "SapiClientError",
