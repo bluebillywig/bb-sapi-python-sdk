@@ -23,8 +23,8 @@ class SapiServerError(SapiHTTPError):
     """5xx response."""
 
 
-class SapiAuthError(SapiError):
-    """Authentication failure (403 / missing permissions)."""
+class SapiAuthError(SapiHTTPError):
+    """Authentication failure (401 / 403 / missing permissions)."""
 
 
 class SapiNotFoundError(SapiClientError):

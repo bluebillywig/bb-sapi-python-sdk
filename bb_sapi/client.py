@@ -83,12 +83,12 @@ class SapiClient:
     def get(
         self,
         entity: str,
-        id: str | int,
+        entity_id: str | int,
         *,
         params: Optional[dict[str, str]] = None,
     ) -> dict[str, Any]:
         """Fetch a single entity by ID."""
-        return self._sapi_request("GET", f"/sapi/{entity}/{id}", params=params)
+        return self._sapi_request("GET", f"/sapi/{entity}/{entity_id}", params=params)
 
     def list(
         self,
@@ -171,18 +171,18 @@ class SapiClient:
     def update(
         self,
         entity: str,
-        id: str | int,
+        entity_id: str | int,
         data: dict[str, Any],
         *,
         params: Optional[dict[str, str]] = None,
     ) -> dict[str, Any]:
         """Update an existing entity (PUT to ``/sapi/{entity}/{id}``)."""
-        return self._sapi_request("PUT", f"/sapi/{entity}/{id}", json=data, params=params)
+        return self._sapi_request("PUT", f"/sapi/{entity}/{entity_id}", json=data, params=params)
 
     def delete(
         self,
         entity: str,
-        id: str | int,
+        entity_id: str | int,
         *,
         purge: bool = False,
         params: Optional[dict[str, str]] = None,
@@ -198,12 +198,12 @@ class SapiClient:
             p["purge"] = "true"
         if params:
             p.update(params)
-        return self._sapi_request("DELETE", f"/sapi/{entity}/{id}", params=p or None)
+        return self._sapi_request("DELETE", f"/sapi/{entity}/{entity_id}", params=p or None)
 
     def action(
         self,
         entity: str,
-        id: str | int,
+        entity_id: str | int,
         action_name: str,
         *,
         method: str = "GET",
@@ -212,7 +212,7 @@ class SapiClient:
     ) -> dict[str, Any]:
         """Call an action on a specific entity (``/sapi/{entity}/{id}/{action}``)."""
         return self._sapi_request(
-            method, f"/sapi/{entity}/{id}/{action_name}", json=data, params=params
+            method, f"/sapi/{entity}/{entity_id}/{action_name}", json=data, params=params
         )
 
     def entity_action(
@@ -315,8 +315,8 @@ class SapiClient:
         status = resp.status_code
         url = resp.url
 
-        if status == 403:
-            raise SapiAuthError(f"HTTP 403: Forbidden (url={url})")
+        if status in (401, 403):
+            raise SapiAuthError(status, "Unauthorized" if status == 401 else "Forbidden", url)
         if status == 404:
             raise SapiNotFoundError(status, "Not Found", url)
         if 400 <= status < 500:

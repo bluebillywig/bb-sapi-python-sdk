@@ -47,6 +47,16 @@ def test_invalid_secret_raises():
         HotpAuth("noseparator")
 
 
+def test_invalid_secret_does_not_leak_value():
+    """The error message must not echo back the secret value."""
+    secret = "this-is-not-valid-format-no-dash-at-start"
+    # Remove the dash so it's a truly invalid format
+    bad = secret.replace("-", "X")
+    with pytest.raises(ValueError) as exc_info:
+        HotpAuth(bad)
+    assert bad not in str(exc_info.value)
+
+
 def test_window_boundary():
     auth = HotpAuth("1-secret")
     # Two timestamps in different windows must differ

@@ -27,7 +27,8 @@ class HotpAuth:
         if "-" not in shared_secret:
             raise ValueError(
                 "shared_secret must be in '{id}-{hex_secret}' format, "
-                f"e.g. '490-55c491d354cfefb9b4d26cf22fbdd0a1'. Got: {shared_secret!r}"
+                f"e.g. '490-55c491d354cfefb9b4d26cf22fbdd0a1'. "
+                f"Got: string of length {len(shared_secret)} with no '-' separator."
             )
         self._id, self._secret = shared_secret.split("-", 1)
 

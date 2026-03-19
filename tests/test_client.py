@@ -35,11 +35,21 @@ def test_get_not_found():
 
 
 @resp_lib.activate
-def test_auth_error():
+def test_auth_error_403():
     resp_lib.add(resp_lib.GET, f"{BASE_URL}/sapi/mediaclip/1", status=403)
     client = make_client()
-    with pytest.raises(SapiAuthError):
+    with pytest.raises(SapiAuthError) as exc_info:
         client.get("mediaclip", "1")
+    assert exc_info.value.status_code == 403
+
+
+@resp_lib.activate
+def test_auth_error_401():
+    resp_lib.add(resp_lib.GET, f"{BASE_URL}/sapi/mediaclip/1", status=401)
+    client = make_client()
+    with pytest.raises(SapiAuthError) as exc_info:
+        client.get("mediaclip", "1")
+    assert exc_info.value.status_code == 401
 
 
 @resp_lib.activate

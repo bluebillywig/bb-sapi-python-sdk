@@ -23,9 +23,9 @@ class MediaClip:
     def __init__(self, client: SapiClient) -> None:
         self._client = client
 
-    def get(self, id: str | int, *, params: Optional[dict[str, str]] = None) -> dict[str, Any]:
+    def get(self, clip_id: str | int, *, params: Optional[dict[str, str]] = None) -> dict[str, Any]:
         """Fetch a single MediaClip by ID."""
-        return self._client.get("mediaclip", id, params=params)
+        return self._client.get("mediaclip", clip_id, params=params)
 
     def list(
         self,
@@ -59,26 +59,26 @@ class MediaClip:
         """Create a new MediaClip."""
         return self._client.create("mediaclip", data)
 
-    def update(self, id: str | int, data: dict[str, Any]) -> dict[str, Any]:
+    def update(self, clip_id: str | int, data: dict[str, Any]) -> dict[str, Any]:
         """Update an existing MediaClip."""
-        return self._client.update("mediaclip", id, data)
+        return self._client.update("mediaclip", clip_id, data)
 
-    def delete(self, id: str | int, *, purge: bool = False) -> dict[str, Any]:
+    def delete(self, clip_id: str | int, *, purge: bool = False) -> dict[str, Any]:
         """
         Delete a MediaClip.
 
         Args:
             purge: Permanently delete instead of soft-delete.
         """
-        return self._client.delete("mediaclip", id, purge=purge)
+        return self._client.delete("mediaclip", clip_id, purge=purge)
 
-    def publish(self, id: str | int) -> dict[str, Any]:
+    def publish(self, clip_id: str | int) -> dict[str, Any]:
         """Publish a MediaClip."""
-        return self._client.action("mediaclip", id, "publish", method="PUT")
+        return self._client.action("mediaclip", clip_id, "publish", method="PUT")
 
-    def unpublish(self, id: str | int) -> dict[str, Any]:
+    def unpublish(self, clip_id: str | int) -> dict[str, Any]:
         """Unpublish a MediaClip."""
-        return self._client.action("mediaclip", id, "unpublish", method="PUT")
+        return self._client.action("mediaclip", clip_id, "unpublish", method="PUT")
 
     def search(
         self,
@@ -110,7 +110,7 @@ class MediaClip:
         Args:
             limit:  Maximum results per page.
             offset: Pagination offset.
-            sort:   Sort expression.
+            sort:   Sort expression passed as a raw query param to ``/papi/search``.
 
         Returns:
             List of MediaClip dicts.
@@ -120,6 +120,6 @@ class MediaClip:
             entity_type="MediaClip",
             limit=limit,
             offset=offset,
-            filters={"sort": sort},
+            filters={"sort": sort},  # papi/search accepts sort as a query param
         )
         return body.get("items", [])
