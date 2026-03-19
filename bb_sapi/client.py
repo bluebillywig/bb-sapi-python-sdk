@@ -32,6 +32,7 @@ from bb_sapi.exceptions import (
     SapiAnalyticsError,
     SapiAuthError,
     SapiClientError,
+    SapiError,
     SapiHTTPError,
     SapiNotFoundError,
     SapiServerError,
@@ -229,6 +230,27 @@ class SapiClient:
             method, f"/sapi/{entity}/{action_name}", json=data, params=params
         )
 
+    def versions(self, entity: str, entity_id: str | int) -> list[dict[str, Any]]:
+        """
+        Return the version history for any entity that supports it, newest first.
+
+        Most SAPI entities support ``/sapi/{entity}/{id}/versions``, including
+        ``lineitem``, ``mediaclip``, ``playout``, ``player``, etc.
+
+        Each entry contains at least ``id``, ``date``, and ``isLatest``.
+        """
+        body = self.action(entity, entity_id, "versions")
+        if isinstance(body, list):
+            return body
+        items = body.get("items")
+        if items is None:
+            raise SapiError(
+                f"Unexpected versions response for {entity}/{entity_id}: "
+                f"expected list or dict with 'items', got {type(body).__name__} "
+                f"with keys: {list(body.keys()) if isinstance(body, dict) else '?'}"
+            )
+        return items
+
     def raw_request(
         self,
         path: str,
@@ -256,7 +278,11 @@ class SapiClient:
         body = self._sapi_request("GET", "/sapi/auth/token")
         token = body.get("token") or body.get("jwt") or body.get("access_token")
         if not token:
-            raise SapiAuthError(f"Unexpected JWT response: {body}")
+            raise SapiAuthError(
+                0,
+                f"Unexpected JWT response — expected 'token'/'jwt'/'access_token' key, "
+                f"got keys: {list(body.keys())}",
+            )
         self._jwt = token
         self._jwt_fetched_at = time.time()
         return self._jwt
@@ -322,17 +348,22 @@ class SapiClient:
         if 400 <= status < 500:
             try:
                 msg = resp.json().get("error") or resp.text
-            except Exception:
+            except ValueError:
                 msg = resp.text
             raise SapiClientError(status, msg, url)
         if status >= 500:
             try:
                 msg = resp.json().get("error") or resp.text
-            except Exception:
+            except ValueError:
                 msg = resp.text
             raise SapiServerError(status, msg, url)
 
         try:
             return resp.json()
-        except Exception as exc:
-            raise SapiHTTPError(status, f"Non-JSON response: {resp.text[:200]}", url) from exc
+        except ValueError as exc:
+            content_type = resp.headers.get("Content-Type", "unknown")
+            raise SapiHTTPError(
+                status,
+                f"Non-JSON response (Content-Type: {content_type}): {resp.text[:500]}",
+                url,
+            ) from exc

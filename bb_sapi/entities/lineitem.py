@@ -46,9 +46,9 @@ class LineItem:
         Return the version history for a lineitem, newest first.
 
         Each entry contains at least ``id``, ``date``, and ``isLatest``.
+        Delegates to :meth:`SapiClient.versions` which works for any entity.
         """
-        body = self._client.action("lineitem", name, "versions")
-        return body if isinstance(body, list) else body.get("items", [])
+        return self._client.versions("lineitem", name)
 
     def creatives_for_period(
         self,
@@ -128,14 +128,12 @@ def _extract_creative_id(vast_url: str) -> Optional[str]:
 
     Expected format: ``https://{pub}.bbvms.com/mediaclip/{id}.xml?output=vast``
 
-    Returns ``None`` for externally hosted creatives.
+    Returns ``None`` for externally hosted creatives (URL lacks ``/mediaclip/`` segment).
     """
-    try:
-        # Strip query string
-        path = vast_url.split("?")[0]
-        if "/mediaclip/" not in path:
-            return None
-        segment = path.split("/mediaclip/")[-1]
-        return segment.split(".")[0]
-    except Exception:
+    # Strip query string, then extract the mediaclip ID segment.
+    # All operations are plain string splits — no exception handling needed.
+    path = vast_url.split("?")[0]
+    if "/mediaclip/" not in path:
         return None
+    segment = path.split("/mediaclip/")[-1]
+    return segment.split(".")[0] or None

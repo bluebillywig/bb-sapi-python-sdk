@@ -25,6 +25,7 @@ except ImportError:
     raise SystemExit("Install openpyxl: pip install openpyxl")
 
 from bb_sapi import SapiClient
+from bb_sapi.exceptions import SapiAuthError, SapiError
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -57,12 +58,15 @@ def fetch_top_videos(client: SapiClient, cfg: dict[str, Any]) -> list[dict[str, 
         for item in results.get("items", []):
             meta[str(item["id"])] = item
 
-    content = [
-        v for v in top
-        if meta.get(str(v["id"]), {}).get("usetype") != "commercial"
-    ]
-    for v in content:
-        v.update(meta.get(str(v["id"]), {}))
+    content = []
+    for v in top:
+        vid_meta = meta.get(str(v["id"]))
+        if vid_meta is None:
+            print(f"  Warning: video {v['id']} not found in metadata search; skipping.")
+            continue
+        if vid_meta.get("usetype") != "commercial":
+            v.update(vid_meta)
+            content.append(v)
     return content
 
 
@@ -73,19 +77,36 @@ def enrich_with_stats(
 ) -> None:
     """Add analytics stats in-place to each video dict."""
     from_date, to_date = cfg["from_date"], cfg["to_date"]
+    failed = 0
     for v in videos:
         vid_id = str(v["id"])
-
-        # Ad stats + viewcount reach in one call
-        ad = client.analytics.ad_stats_per_video(vid_id, from_date, to_date)
-        reach = client.analytics.viewcount_reach(vid_id, from_date, to_date, thresholds=REACH_THRESHOLDS)
+        try:
+            ad = client.analytics.ad_stats_per_video(vid_id, from_date, to_date)
+            reach = client.analytics.viewcount_reach(
+                vid_id, from_date, to_date, thresholds=REACH_THRESHOLDS
+            )
+        except SapiAuthError:
+            raise  # credentials broken — abort immediately
+        except SapiError as exc:
+            print(
+                f"  ERROR: failed stats for {vid_id} ({v.get('title', '?')}): {exc}; "
+                f"recording as empty."
+            )
+            v["impressions"] = None
+            v["lineitems"] = {}
+            v["vast_quartiles"] = {}
+            v["reach"] = {}
+            failed += 1
+            continue
 
         v["impressions"] = ad["impressions"]
         v["lineitems"] = ad["lineitems"]
         v["vast_quartiles"] = ad["vastQuartiles"]
         v["reach"] = reach
-
         print(f"  {v.get('title', vid_id)}: {v['views']} views, {v['impressions']} impressions")
+
+    if failed:
+        print(f"  WARNING: {failed}/{len(videos)} videos failed stats fetch.")
 
 
 def fetch_creatives(
@@ -99,15 +120,21 @@ def fetch_creatives(
         all_lineitems.update(v.get("lineitems", {}).keys())
 
     creative_map: dict[str, list[dict]] = {}
-    from bb_sapi.entities.lineitem import LineItem
-    li_client = LineItem(client)
+    failed = 0
     for name in sorted(all_lineitems):
         try:
-            creatives = li_client.creatives_for_period(name, cfg["from_date"], cfg["to_date"])
-            creative_map[name] = creatives
-        except Exception as exc:
-            print(f"  Warning: could not fetch creatives for {name}: {exc}")
+            creative_map[name] = client.lineitem.creatives_for_period(
+                name, cfg["from_date"], cfg["to_date"]
+            )
+        except SapiAuthError:
+            raise  # credentials broken — abort immediately
+        except SapiError as exc:
+            print(f"  Warning: could not fetch creatives for {name!r}: {exc}")
             creative_map[name] = []
+            failed += 1
+
+    if failed:
+        print(f"  WARNING: {failed}/{len(all_lineitems)} lineitems failed creative resolution.")
     return creative_map
 
 

@@ -5,6 +5,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, Optional
 
+from bb_sapi.exceptions import SapiError
+
 if TYPE_CHECKING:
     from bb_sapi.client import SapiClient
 
@@ -122,4 +124,9 @@ class MediaClip:
             offset=offset,
             filters={"sort": sort},  # papi/search accepts sort as a query param
         )
-        return body.get("items", [])
+        if "items" not in body:
+            raise SapiError(
+                f"Unexpected search response: expected 'items' key, "
+                f"got keys: {list(body.keys())}"
+            )
+        return body["items"]
