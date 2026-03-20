@@ -1,0 +1,62 @@
+name: Create release
+on:
+  workflow_dispatch:
+    inputs:
+      patch:
+        description: "Patch version override (leave empty to auto-increment from latest)"
+        required: false
+        type: string
+
+jobs:
+  create-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate branch
+        run: |
+          if [[ ! "$GITHUB_REF_NAME" =~ ^release/v[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::This workflow must be run from a release branch (release/v*.*), got '$GITHUB_REF_NAME'"
+            exit 1
+          fi
+
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-tags: true
+
+      - name: Determine version
+        id: version
+        env:
+          GH_TOKEN: ${{ secrets.GLOBAL_ACTION_TOKEN }}
+        run: |
+          MAJOR_MINOR="${GITHUB_REF_NAME#release/v}"
+
+          if [[ -n "${{ inputs.patch }}" ]]; then
+            PATCH="${{ inputs.patch }}"
+          else
+            # Find the latest patch version for this major.minor
+            LATEST_TAG=$(gh release list --json tagName -q '.[].tagName' \
+              | grep -E "^v${MAJOR_MINOR}\.[0-9]+$" \
+              | sort -V \
+              | tail -n 1)
+
+            if [[ -n "$LATEST_TAG" ]]; then
+              LATEST_PATCH="${LATEST_TAG##*.}"
+              PATCH=$((LATEST_PATCH + 1))
+            else
+              PATCH=0
+            fi
+          fi
+
+          VERSION="${MAJOR_MINOR}.${PATCH}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Resolved version: $VERSION"
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GLOBAL_ACTION_TOKEN }}
+        run: |
+          gh release create "${{ steps.version.outputs.tag }}" \
+            --target "${{ github.ref_name }}" \
+            --title "${{ steps.version.outputs.tag }}" \
+            --generate-notes
