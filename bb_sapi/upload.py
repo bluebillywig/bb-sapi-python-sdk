@@ -262,7 +262,12 @@ class TusUploader:
     def _tus_complete(
         self, tus_upload_id: str, parts: list[dict[str, Any]]
     ) -> dict[str, Any]:
-        """POST /sapi/tus/{id}/complete — finalise the multipart upload."""
+        """POST /sapi/tus/{id}/complete — finalise the multipart upload.
+
+        The parts list MUST be wrapped in a ``{"parts": [...]}`` object. Posting a
+        bare array makes SAPI build an empty CompleteMultipartUpload body, which S3
+        rejects with ``MalformedXML`` (surfaced as HTTP 500).
+        """
         url = f"{self._client._base_url}/sapi/tus/{tus_upload_id}/complete"
         headers = {
             **self._client._auth.headers(),
@@ -270,7 +275,7 @@ class TusUploader:
         }
         resp = self._client._session.post(
             url,
-            json=parts,
+            json={"parts": parts},
             headers=headers,
             timeout=self._client._timeout,
         )

@@ -123,7 +123,8 @@ def test_tus_complete_sends_correct_request():
     assert req.headers.get("Tus-Resumable") == "1.0.0"
     assert "rpctoken" in req.headers
     import json
-    assert json.loads(req.body) == parts
+    # parts must be wrapped: SAPI needs {"parts": [...]} or S3 returns MalformedXML
+    assert json.loads(req.body) == {"parts": parts}
 
 
 # ---------------------------------------------------------------------------
