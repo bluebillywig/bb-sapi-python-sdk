@@ -3,9 +3,10 @@ MediaClip entity client for Blue Billywig SAPI.
 """
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any, Optional, Sequence
 
 from bb_sapi.exceptions import SapiError
+from bb_sapi.search import FilterSet
 
 if TYPE_CHECKING:
     from bb_sapi.client import SapiClient
@@ -55,6 +56,59 @@ class MediaClip:
             offset=offset,
             sort=sort,
             filters=f or None,
+        )
+
+    def search_by_filterset(
+        self,
+        filter_set: FilterSet,
+        *,
+        limit: Optional[int] = None,
+        offset: Optional[int] = None,
+        sort: Optional[str] = None,
+        query: str = "*",
+        filter_queries: Optional[Sequence[str]] = None,
+    ) -> dict[str, Any]:
+        """
+        Search MediaClips using a filterset.
+
+        The filtered counterpart to :meth:`list`, which can only page and sort.
+        Distinct from :meth:`search`, which is a free-text query against
+        ``/papi/search``; this filters ``/sapi/mediaclip``.
+        A filterset is the same structure the OVP builds in its filter UI, so a
+        search moves between the OVP, the API and this SDK unchanged::
+
+            filter_set = (
+                FilterSet()
+                .where("status", "is", "published")
+                .where("title", "contains", "koert")
+            )
+            client.mediaclip.search_by_filterset(filter_set)
+
+        The filterset goes over the wire as JSON and SAPI compiles it, exactly
+        as the OVP does. It is deliberately not compiled here: that would be a
+        second implementation of semantics the server owns, and a filter SAPI
+        cannot read is ignored silently — HTTP 200, with neither ``numfound``
+        nor ``items``.
+
+        Args:
+            filter_set:     Groups are AND-ed, filters within a group OR-ed.
+            filter_queries: Raw Solr filters, for the rare thing a filterset
+                cannot express. NOTE the encoding: these go out as ``fq[0]=``;
+                SAPI ignores a plain ``fq=`` and a nested ``fq[][0]=``, in both
+                cases without an error.
+        """
+        params: dict[str, str] = {"q": query}
+        if not filter_set.is_empty():
+            params["filterset"] = filter_set.to_json()
+        for index, filter_query in enumerate(filter_queries or []):
+            params[f"fq[{index}]"] = filter_query
+
+        return self._client.list(
+            "mediaclip",
+            limit=limit,
+            offset=offset,
+            sort=sort,
+            params=params,
         )
 
     def create(self, data: dict[str, Any]) -> dict[str, Any]:
