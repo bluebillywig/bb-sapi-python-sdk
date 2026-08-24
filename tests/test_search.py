@@ -56,11 +56,68 @@ class TestFilterSet:
         assert FilterSet().where("status", "is", "   ").to_list() == []
         assert FilterSet().where("status", "is").is_empty()
 
-    def test_presence_operators_survive_without_a_value(self):
+    def test_presence_operators_carry_the_placeholder_the_backend_requires(self):
+        # The backend's compiler skips ANY filter whose value is empty —
+        # presence tests included — so a bare isEmpty silently never fires
+        # (verified live: it returned the full unfiltered publication). OVP6
+        # sends '*' with the comment "backend needs a value to work".
         filter_set = FilterSet().where("author", "isEmpty")
 
         assert not filter_set.is_empty()
-        assert "value" not in filter_set.to_list()[0]["filters"][0]
+        assert filter_set.to_list()[0]["filters"][0]["value"] == "*"
+
+    def test_the_placeholder_overrides_whatever_value_a_caller_supplied(self):
+        filter_set = FilterSet().where("author", "isNotEmpty", "anything")
+
+        assert filter_set.to_list()[0]["filters"][0]["value"] == "*"
+
+    def test_numbers_and_booleans_are_normalised_to_backend_strings(self):
+        # Verified live: a JSON number works, but a JSON boolean gets mangled
+        # into "1" by the backend and matches NOTHING (hasInteractivity true as
+        # a boolean returned 0 results; as the string 'true', 868). Previously
+        # these values were silently DROPPED here, returning the full result
+        # set — the exact failure class this SDK exists to remove.
+        assert (
+            FilterSet().where("views", "isGreaterThan", 100).to_list()[0]["filters"][0]["value"]
+            == "100"
+        )
+        assert (
+            FilterSet().where("hasInteractivity", "is", True).to_list()[0]["filters"][0]["value"]
+            == "true"
+        )
+        assert (
+            FilterSet().where("isImported", "is", False).to_list()[0]["filters"][0]["value"]
+            == "false"
+        )
+        assert FilterSet().where("views", "isAnyOf", [1, 2.5, True]).to_list()[0]["filters"][0][
+            "value"
+        ] == ["1", "2.5", "true"]
+
+    def test_non_scalar_members_are_dropped_not_stringified(self):
+        filter_set = FilterSet.from_data(
+            [{"filters": [{"field": "status", "operator": "is", "value": ["published", {"nested": 1}]}]}]
+        )
+
+        assert filter_set.to_list()[0]["filters"][0]["value"] == ["published"]
+
+    def test_a_filter_without_an_operator_is_skipped_not_guessed(self):
+        # The old behaviour defaulted a missing operator to "is", inventing a
+        # condition the author never wrote.
+        filter_set = FilterSet.from_data(
+            [
+                {"filters": [{"field": "status", "value": "published"}]},
+                {"filters": [{"field": "status", "operator": "is", "value": "draft"}]},
+            ]
+        )
+
+        groups = filter_set.to_list()
+        assert len(groups) == 1
+        assert groups[0]["filters"][0]["value"] == "draft"
+
+    def test_a_group_whose_filters_is_not_a_list_is_skipped(self):
+        filter_set = FilterSet.from_data([{"filters": "junk"}])
+
+        assert filter_set.to_list() == []
 
     def test_a_group_left_with_no_filters_is_dropped(self):
         filter_set = FilterSet().and_group(Filter("status", "is", "")).where("mediatype", "is", "video")
@@ -137,3 +194,35 @@ class TestMediaClipSearchByFilterSet:
         query = parse_qs(urlparse(resp_lib.calls[0].request.url).query)
         assert query["fq[0]"] == ['statusSort:"published"']
         assert "fq" not in query
+
+class TestGetPosterPath:
+    def test_it_uses_the_ovp_thumbnail_route(self):
+        client = make_client()
+
+        assert client.mediaclip.get_poster_path(1234, 320, 180) == (
+            f"{BASE_URL}/mediaclip/1234/spthumbnail/320/180.webp"
+        )
+
+    def test_it_lets_the_service_choose_dimensions_by_default(self):
+        client = make_client()
+
+        assert client.mediaclip.get_poster_path(1234) == (
+            f"{BASE_URL}/mediaclip/1234/spthumbnail/default/default.webp"
+        )
+
+    def test_a_non_numeric_dimension_falls_back_to_default(self):
+        # A dimension is part of the URL path, so anything that is not a plain
+        # number must not enter it.
+        client = make_client()
+
+        assert client.mediaclip.get_poster_path(1234, "320/../../etc", "auto") == (
+            f"{BASE_URL}/mediaclip/1234/spthumbnail/default/default.webp"
+        )
+
+    def test_an_rpc_token_rides_along_for_draft_clips(self):
+        client = make_client()
+
+        assert client.mediaclip.get_poster_path(1234, rpc_token="12-345678") == (
+            f"{BASE_URL}/mediaclip/1234/spthumbnail/default/default.webp"
+            "?useSession=true&rpctoken=12-345678"
+        )

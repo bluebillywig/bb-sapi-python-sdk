@@ -83,6 +83,12 @@ class SapiClient:
     # Generic entity operations
     # ------------------------------------------------------------------
 
+
+    @property
+    def base_url(self) -> str:
+        """The publication base URL, without a trailing slash."""
+        return self._base_url
+
     def get(
         self,
         entity: str,

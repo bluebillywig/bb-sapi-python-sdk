@@ -11,6 +11,14 @@ ignored, and the response is HTTP 200 carrying neither ``numfound`` nor
 
 Mirrors ``app/services/filter-set.types.ts`` in OVP6, so a filterset moves
 between the UI, the API and any SDK unchanged.
+
+Server-side quirks a caller inherits (the compiler is formatengine's):
+
+- A filter whose value is the string '0' is dropped by the backend's
+  empty-value guard, so "views is 0" cannot be expressed as a filterset.
+- In values, + becomes a space and " is stripped before compilation.
+- An unknown FIELD is not an error: it queries a non-existent index field and
+  returns numfound=0 — a typo'd field name looks like an empty library.
 """
 from __future__ import annotations
 
@@ -40,7 +48,19 @@ FilterOperator = Literal[
 #: Operators that test presence, so they mean something without a value.
 VALUELESS_OPERATORS = frozenset({"isEmpty", "isNotEmpty"})
 
-FilterValue = Union[str, Sequence[str], None]
+#: Numbers and booleans are accepted and normalised to strings on the wire:
+#: the backend's compiler mangles a JSON true into "1" (which matches
+#: nothing, silently) and its empty-value guard drops false outright, while
+#: numbers work but only ever appear as strings in what OVP6 sends.
+FilterScalar = Union[str, int, float, bool]
+FilterValue = Union[FilterScalar, Sequence[FilterScalar], None]
+
+
+def _normalize_scalar(value: FilterScalar) -> str:
+    # bool first: bool subclasses int, so isinstance(True, int) is True.
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    return str(value)
 
 
 class Filter:
@@ -65,13 +85,28 @@ class Filter:
         if self.operator in VALUELESS_OPERATORS:
             return True
         values = self.value if isinstance(self.value, (list, tuple)) else [self.value]
-        return any(isinstance(v, str) and v.strip() != "" for v in values)
+        return any(
+            isinstance(v, (int, float)) or (isinstance(v, str) and v.strip() != "")
+            for v in values
+        )
 
     def to_dict(self) -> dict[str, Any]:
-        """Drop keys with no value, so the JSON matches what the OVP sends."""
+        """Normalise to the wire shape: what the OVP sends and the backend reads."""
         payload: dict[str, Any] = {"field": self.field, "operator": self.operator}
-        if self.value is not None and self.operator not in VALUELESS_OPERATORS:
-            payload["value"] = list(self.value) if isinstance(self.value, tuple) else self.value
+        if self.operator in VALUELESS_OPERATORS:
+            # The backend's compiler skips ANY filter whose value is empty —
+            # presence tests included — so isEmpty/isNotEmpty must carry a
+            # placeholder or they silently never fire (verified live: a bare
+            # isEmpty returned the full unfiltered publication). '*' is what
+            # OVP6 sends ("backend needs a value to work"), and it overrides
+            # whatever the caller supplied.
+            payload["value"] = "*"
+        elif isinstance(self.value, (list, tuple)):
+            payload["value"] = [
+                _normalize_scalar(v) for v in self.value if isinstance(v, (str, int, float))
+            ]
+        elif isinstance(self.value, (str, int, float)):
+            payload["value"] = _normalize_scalar(self.value)
         if self.type:
             payload["type"] = self.type
         return payload
@@ -114,16 +149,22 @@ class FilterSet:
         for group in data:
             if not isinstance(group, dict):
                 continue
-            filters = [
-                Filter(
-                    str(f.get("field", "")),
-                    f.get("operator", "is"),
-                    f.get("value"),
-                    f.get("type") or None,
+            raw_filters = group.get("filters", [])
+            if not isinstance(raw_filters, list):
+                raw_filters = []
+            filters = []
+            for f in raw_filters:
+                if not isinstance(f, dict):
+                    continue
+                operator = f.get("operator")
+                if not isinstance(operator, str) or operator == "":
+                    # A filter without an operator is junk — skipping it beats
+                    # silently guessing "is", which would invent a condition
+                    # the author never wrote.
+                    continue
+                filters.append(
+                    Filter(str(f.get("field", "")), operator, f.get("value"), f.get("type") or None)
                 )
-                for f in group.get("filters", [])
-                if isinstance(f, dict)
-            ]
             groups.append(filters)
         return cls(groups)
 

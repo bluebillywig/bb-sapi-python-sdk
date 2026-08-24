@@ -4,6 +4,7 @@ MediaClip entity client for Blue Billywig SAPI.
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, Optional, Sequence
+from urllib.parse import quote
 
 from bb_sapi.exceptions import SapiError
 from bb_sapi.search import FilterSet
@@ -62,9 +63,9 @@ class MediaClip:
         self,
         filter_set: FilterSet,
         *,
-        limit: Optional[int] = None,
-        offset: Optional[int] = None,
-        sort: Optional[str] = None,
+        limit: int = 15,
+        offset: int = 0,
+        sort: str = "createddate desc",
         query: str = "*",
         filter_queries: Optional[Sequence[str]] = None,
     ) -> dict[str, Any]:
@@ -110,6 +111,43 @@ class MediaClip:
             sort=sort,
             params=params,
         )
+
+    def get_poster_path(
+        self,
+        clip_id: str | int,
+        width: str | int = "default",
+        height: str | int = "default",
+        *,
+        rpc_token: Optional[str] = None,
+    ) -> str:
+        """
+        Absolute URL of a media clip's poster image.
+
+        Use this rather than building a URL from the clip payload. A clip's
+        src is its SOURCE MEDIA file, so defaultMediaAssetPath + src
+        yields a link to a .mov — the service says as much, answering
+        "Invalid src mime type: video/quicktime". That mistake shows up as a
+        grid full of broken images.
+
+        "default" is accepted for either dimension and lets the service
+        choose. A dimension that is not a plain number falls back to
+        "default" rather than entering the URL path.
+
+        A draft (unpublished) clip's poster is not public. Pass an RPC token —
+        minted from the READ-ONLY key, never the write key, because this URL
+        ends up in page source — to see those.
+        """
+        def dimension(value: str | int) -> str:
+            text = str(value)
+            return text if text.isdigit() and len(text) <= 5 else "default"
+
+        url = (
+            f"{self._client.base_url}/mediaclip/{quote(str(clip_id), safe='')}"
+            f"/spthumbnail/{dimension(width)}/{dimension(height)}.webp"
+        )
+        if rpc_token:
+            url += "?useSession=true&rpctoken=" + quote(rpc_token, safe="")
+        return url
 
     def create(self, data: dict[str, Any]) -> dict[str, Any]:
         """Create a new MediaClip."""
