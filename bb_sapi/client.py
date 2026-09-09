@@ -28,7 +28,7 @@ from bb_sapi.auth import HotpAuth
 from bb_sapi.entities.analytics import Analytics
 from bb_sapi.entities.lineitem import LineItem
 from bb_sapi.entities.mediaclip import MediaClip
-from bb_sapi.upload import TusUploader, UploadResult
+from bb_sapi.upload import TusUploader, UploadResult, UploadStatus
 from bb_sapi.exceptions import (
     SapiAnalyticsError,
     SapiAuthError,
@@ -273,7 +273,7 @@ class SapiClient:
         file_path: str,
         *,
         title: Optional[str] = None,
-        use_type: str = "commercial",
+        use_type: Optional[str] = None,
         mediaclip_id: Optional[str | int] = None,
         on_progress=None,
     ) -> "UploadResult":
@@ -286,13 +286,20 @@ class SapiClient:
 
         Args:
             file_path:    Path to the local file.
-            title:        Display name (defaults to filename without extension).
-            use_type:     ``"commercial"`` (creative) or ``"editorial"`` (content).
+            title:        Display name to set on ``mediaclip_id`` once the
+                          upload lands. Requires ``mediaclip_id``.
+            use_type:     ``"commercial"`` (creative) or ``"editorial"``
+                          (content), set on ``mediaclip_id`` once the upload
+                          lands. Requires ``mediaclip_id``.
             mediaclip_id: Attach the uploaded file to an existing MediaClip.
             on_progress:  Optional ``(bytes_uploaded, total_bytes)`` callback.
 
         Returns:
             :class:`~bb_sapi.upload.UploadResult`
+
+        Raises:
+            SapiError: If ``title`` or ``use_type`` is given without
+                ``mediaclip_id`` — there would be no entity to set them on.
         """
         return self._uploader.upload_file(
             file_path,
@@ -323,8 +330,12 @@ class SapiClient:
             description:  Optional description.
             tags:         Optional list of tags.
             use_type:     ``"editorial"`` (content) or ``"commercial"`` (creative).
-            status:       Initial status: ``"draft"`` (default) or ``"published"``.
-            extra_fields: Additional fields for the mediaclip entity.
+            status:       Status applied once the upload lands: ``"draft"``
+                          (default) or ``"published"``. The clip is always
+                          created as a draft first, so a failed upload cannot
+                          leave a published clip with no media.
+            extra_fields: Additional fields for the mediaclip entity. These
+                          override every derived and explicit field above.
             on_progress:  Optional ``(bytes_uploaded, total_bytes)`` callback.
 
         Returns:
@@ -340,6 +351,28 @@ class SapiClient:
             extra_fields=extra_fields,
             on_progress=on_progress,
         )
+
+    def upload_status(self, tus_upload_id: str) -> "UploadStatus":
+        """
+        Report how much of an in-flight TUS upload S3 already holds.
+
+        Use it to resume an interrupted upload without re-sending parts that
+        already landed.
+        """
+        return self._uploader.upload_status(tus_upload_id)
+
+    def sign_part(self, tus_upload_id: str, part_number: int) -> str:
+        """Get a fresh presigned URL for one part, e.g. after the original expired."""
+        return self._uploader.sign_part(tus_upload_id, part_number)
+
+    def abort_upload(self, tus_upload_id: str) -> None:
+        """
+        Abort an upload and release the S3 parts already stored for it.
+
+        Failed uploads abort themselves; call this to clean up after a crash,
+        or when an error message tells you to.
+        """
+        return self._uploader.abort_upload(tus_upload_id)
 
     # ------------------------------------------------------------------
     # JWT / Bearer auth (for /v1 endpoints such as ad-stats)
@@ -424,17 +457,16 @@ class SapiClient:
             raise SapiAuthError(status, "Unauthorized" if status == 401 else "Forbidden", url)
         if status == 404:
             raise SapiNotFoundError(status, "Not Found", url)
-        if 400 <= status < 500:
+        if status >= 400:
+            # The body is not guaranteed to be a JSON object — a bare array or
+            # scalar would make .get() raise and mask the real HTTP error.
             try:
-                msg = resp.json().get("error") or resp.text
+                body = resp.json()
+                msg = (body.get("error") if isinstance(body, dict) else None) or resp.text
             except ValueError:
                 msg = resp.text
-            raise SapiClientError(status, msg, url)
-        if status >= 500:
-            try:
-                msg = resp.json().get("error") or resp.text
-            except ValueError:
-                msg = resp.text
+            if status < 500:
+                raise SapiClientError(status, msg, url)
             raise SapiServerError(status, msg, url)
 
         try:
