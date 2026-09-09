@@ -30,9 +30,9 @@ def make_client() -> SapiClient:
     return SapiClient(BASE_URL, SECRET, timeout=5)
 
 
-def make_temp_file(content: bytes = b"x" * 10) -> str:
+def make_temp_file(content: bytes = b"x" * 10, suffix: str = ".mp4") -> str:
     """Create a temporary file and return its path."""
-    fd, path = tempfile.mkstemp(suffix=".mp4")
+    fd, path = tempfile.mkstemp(suffix=suffix)
     os.write(fd, content)
     os.close(fd)
     return path
@@ -123,7 +123,9 @@ def test_tus_complete_sends_correct_request():
     assert req.headers.get("Tus-Resumable") == "1.0.0"
     assert "rpctoken" in req.headers
     import json
-    assert json.loads(req.body) == parts
+    # The endpoint reads $input['parts'] — a bare array silently completes with
+    # zero parts and S3 answers MalformedXML (HTTP 500).
+    assert json.loads(req.body) == {"parts": parts}
 
 
 # ---------------------------------------------------------------------------
@@ -296,5 +298,135 @@ def test_on_progress_called():
         assert len(calls) == 1
         done, total = calls[0]
         assert done == total
+    finally:
+        os.unlink(path)
+
+
+# ---------------------------------------------------------------------------
+# mediatype derivation
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize(
+    "content_type,expected",
+    [
+        ("video/mp4", "video"),
+        ("video/quicktime", "video"),
+        ("audio/mpeg", "audio"),
+        ("image/png", "image"),
+        ("image/jpeg", "image"),
+        ("application/pdf", "document"),
+        ("text/vtt", "document"),
+        ("application/octet-stream", "document"),
+    ],
+)
+def test_media_type_mapping(content_type, expected):
+    uploader = TusUploader(make_client())
+    assert uploader._media_type(content_type) == expected
+
+
+@resp_lib.activate
+@pytest.mark.parametrize(
+    "suffix,expected",
+    [(".png", "image"), (".mp4", "video"), (".mp3", "audio"), (".pdf", "document")],
+)
+def test_create_mediaclip_sends_correct_mediatype(suffix, expected):
+    """An image must not be created as an audio clip (shows a speaker icon in the OVP)."""
+    resp_lib.add(resp_lib.POST, f"{BASE_URL}/sapi/mediaclip/new", json={"id": 7})
+    resp_lib.add(resp_lib.POST, f"{BASE_URL}/sapi/tus", json=TUS_CREATE_RESPONSE)
+    resp_lib.add(
+        resp_lib.PUT,
+        "https://s3.example.com/upload",
+        status=200,
+        headers={"ETag": '"etag1"'},
+    )
+    resp_lib.add(
+        resp_lib.POST,
+        f"{BASE_URL}/sapi/tus/abc123/complete",
+        json={"status": "success"},
+    )
+
+    path = make_temp_file(b"data", suffix=suffix)
+    try:
+        import json
+        client = make_client()
+        client.create_mediaclip(path, title="Asset")
+        body = json.loads(resp_lib.calls[0].request.body)
+        assert body["mediatype"] == expected
+    finally:
+        os.unlink(path)
+
+
+@resp_lib.activate
+def test_create_mediaclip_extra_fields_can_override_mediatype():
+    resp_lib.add(resp_lib.POST, f"{BASE_URL}/sapi/mediaclip/new", json={"id": 7})
+    resp_lib.add(resp_lib.POST, f"{BASE_URL}/sapi/tus", json=TUS_CREATE_RESPONSE)
+    resp_lib.add(
+        resp_lib.PUT,
+        "https://s3.example.com/upload",
+        status=200,
+        headers={"ETag": '"e"'},
+    )
+    resp_lib.add(
+        resp_lib.POST,
+        f"{BASE_URL}/sapi/tus/abc123/complete",
+        json={"status": "success"},
+    )
+
+    path = make_temp_file(b"data", suffix=".ttf")
+    try:
+        import json
+        client = make_client()
+        client.create_mediaclip(path, extra_fields={"mediatype": "font"})
+        body = json.loads(resp_lib.calls[0].request.body)
+        assert body["mediatype"] == "font"
+    finally:
+        os.unlink(path)
+
+
+# ---------------------------------------------------------------------------
+# S3 ETag handling
+# ---------------------------------------------------------------------------
+
+@resp_lib.activate
+def test_etag_quotes_are_preserved():
+    """S3 returns a quoted ETag; CompleteMultipartUpload expects it verbatim."""
+    resp_lib.add(resp_lib.POST, f"{BASE_URL}/sapi/tus", json=TUS_CREATE_RESPONSE)
+    resp_lib.add(
+        resp_lib.PUT,
+        "https://s3.example.com/upload",
+        status=200,
+        headers={"ETag": '"d41d8cd98f00b204e9800998ecf8427e"'},
+    )
+    resp_lib.add(
+        resp_lib.POST,
+        f"{BASE_URL}/sapi/tus/abc123/complete",
+        json={"status": "success"},
+    )
+
+    path = make_temp_file(b"data")
+    try:
+        import json
+        client = make_client()
+        client.upload_file(path)
+        body = json.loads(resp_lib.calls[2].request.body)
+        assert body == {
+            "parts": [
+                {"PartNumber": 1, "ETag": '"d41d8cd98f00b204e9800998ecf8427e"'}
+            ]
+        }
+    finally:
+        os.unlink(path)
+
+
+@resp_lib.activate
+def test_missing_etag_raises_rather_than_completing_with_empty_part():
+    resp_lib.add(resp_lib.POST, f"{BASE_URL}/sapi/tus", json=TUS_CREATE_RESPONSE)
+    resp_lib.add(resp_lib.PUT, "https://s3.example.com/upload", status=200)
+
+    path = make_temp_file(b"data")
+    try:
+        client = make_client()
+        with pytest.raises(SapiError, match="no ETag for part 1"):
+            client.upload_file(path)
     finally:
         os.unlink(path)

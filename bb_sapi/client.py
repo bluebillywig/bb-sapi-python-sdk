@@ -318,7 +318,7 @@ class SapiClient:
         Full mediaclip creation workflow: create entity → TUS → S3 → complete.
 
         Args:
-            file_path:    Path to the local video/audio file.
+            file_path:    Path to the local media file.
             title:        Display title (defaults to filename without extension).
             description:  Optional description.
             tags:         Optional list of tags.

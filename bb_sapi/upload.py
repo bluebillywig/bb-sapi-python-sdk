@@ -168,8 +168,12 @@ class TusUploader:
         3. Upload file chunks to S3 via presigned URLs
         4. Complete the TUS upload
 
+        The entity's ``mediatype`` is derived from the file (see
+        :meth:`_media_type`); pass ``extra_fields={"mediatype": ...}``
+        to override it.
+
         Args:
-            file_path:    Path to the local video/audio file.
+            file_path:    Path to the local media file.
             title:        Display title (defaults to filename without extension).
             description:  Optional description.
             tags:         Optional list of tags.
@@ -186,7 +190,7 @@ class TusUploader:
         file_name_no_ext = path.stem
         file_size = path.stat().st_size
         content_type = self._content_type(path)
-        media_type = "video" if content_type.startswith("video") else "audio"
+        media_type = self._media_type(content_type)
 
         # Step 1 — create the mediaclip entity
         clip_data: dict[str, Any] = {
@@ -270,7 +274,7 @@ class TusUploader:
         }
         resp = self._client._session.post(
             url,
-            json=parts,
+            json={"parts": parts},
             headers=headers,
             timeout=self._client._timeout,
         )
@@ -320,7 +324,14 @@ class TusUploader:
                         f"HTTP {resp.status_code} — {resp.text[:200]}"
                     )
 
-                etag = resp.headers.get("ETag", "").strip('"')
+                # S3 returns the ETag quoted ('"abc123"'). Pass it through
+                # verbatim — that is what CompleteMultipartUpload expects.
+                etag = resp.headers.get("ETag", "")
+                if not etag:
+                    raise SapiError(
+                        f"S3 returned no ETag for part {part_number}; "
+                        f"cannot complete the multipart upload."
+                    )
                 parts.append({"PartNumber": part_number, "ETag": etag})
 
                 bytes_uploaded += len(chunk)
@@ -335,6 +346,20 @@ class TusUploader:
 
     def _content_type(self, path: Path) -> str:
         return self._CONTENT_TYPES.get(path.suffix.lower(), "application/octet-stream")
+
+    def _media_type(self, content_type: str) -> str:
+        """
+        Map a MIME content type onto a SAPI ``mediatype``.
+
+        Mirrors how the backend derives the type itself: the ``video``,
+        ``audio`` and ``image`` MIME families map to the mediatype of the same
+        name, and anything else (subtitles, PDFs, unrecognised binary) is a
+        ``document``.
+        """
+        for family in ("video", "audio", "image"):
+            if content_type.startswith(family):
+                return family
+        return "document"
 
 
 # ---------------------------------------------------------------------------

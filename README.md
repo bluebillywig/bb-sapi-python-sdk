@@ -204,9 +204,14 @@ print(result.tus_upload_id)      # TUS upload ID
 print(result.s3_key)             # S3 object key
 ```
 
-### Create a mediaclip with a video file
+### Create a mediaclip with a file
 
 Full OVP6 workflow: creates the mediaclip entity first, then uploads the file.
+
+The entity's `mediatype` is derived from the file: `video`, `audio` and `image`
+files map to the mediatype of the same name, and anything else (subtitles,
+PDFs, unrecognised binary) becomes a `document`. Pass
+`extra_fields={"mediatype": ...}` to override it — for example `"font"`.
 
 ```python
 result = client.create_mediaclip(
@@ -244,7 +249,8 @@ PUT  <presigned_url>  (×N parts)  ← upload chunks directly to S3
   ← collect ETag from each response
 
 POST /sapi/tus/{id}/complete      ← finalise multipart upload
-  [{PartNumber, ETag}, ...]
+  {"parts": [{PartNumber, ETag}, ...]}
+  ETags are sent exactly as S3 returned them, quotes included.
 ```
 
 ## LineItem version history
