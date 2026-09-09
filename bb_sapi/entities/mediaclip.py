@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, Optional
 
+from bb_sapi._types import JsonDicts
 from bb_sapi.exceptions import SapiError
 
 if TYPE_CHECKING:
@@ -105,7 +106,7 @@ class MediaClip:
         limit: int = 100,
         offset: int = 0,
         sort: str = "views DESC",
-    ) -> list[dict[str, Any]]:
+    ) -> JsonDicts:
         """
         Return content MediaClips, excluding ad creatives (``usetype: commercial``).
 

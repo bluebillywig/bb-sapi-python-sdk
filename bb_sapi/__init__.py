@@ -1,8 +1,8 @@
 """Blue Billywig SAPI Python SDK."""
-from importlib.metadata import PackageNotFoundError, version as _distribution_version
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as _distribution_version
 
 from bb_sapi.client import SapiClient
-from bb_sapi.upload import MediaType, UploadResult, UploadStatus
 from bb_sapi.exceptions import (
     SapiAnalyticsError,
     SapiAuthError,
@@ -12,19 +12,20 @@ from bb_sapi.exceptions import (
     SapiNotFoundError,
     SapiServerError,
 )
+from bb_sapi.upload import MediaType, UploadResult, UploadStatus
 
 __all__ = [
-    "SapiClient",
-    "UploadResult",
-    "UploadStatus",
     "MediaType",
+    "SapiAnalyticsError",
+    "SapiAuthError",
+    "SapiClient",
+    "SapiClientError",
     "SapiError",
     "SapiHTTPError",
-    "SapiClientError",
-    "SapiServerError",
-    "SapiAuthError",
     "SapiNotFoundError",
-    "SapiAnalyticsError",
+    "SapiServerError",
+    "UploadResult",
+    "UploadStatus",
 ]
 
 # Read from the installed distribution rather than a second hand-maintained

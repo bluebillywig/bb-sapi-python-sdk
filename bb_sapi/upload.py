@@ -28,7 +28,7 @@ import mimetypes
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, Literal, Optional
+from typing import TYPE_CHECKING, Any, Callable, ClassVar, Literal, Optional
 
 import requests as _requests
 from requests.adapters import HTTPAdapter, Retry
@@ -104,7 +104,7 @@ class TusUploader:
 
     #: Extensions whose MIME type the stdlib gets wrong, or does not know.
     #: Anything absent here falls through to :mod:`mimetypes`.
-    _CONTENT_TYPES = {
+    _CONTENT_TYPES: ClassVar[dict[str, str]] = {
         ".mp4": "video/mp4",
         ".mov": "video/quicktime",
         ".avi": "video/x-msvideo",
@@ -127,7 +127,7 @@ class TusUploader:
     #: SAPI ``mediatype`` directly. ``application/mxf`` and
     #: ``application/vnd.ms-fontobject`` are correct on the wire but say nothing
     #: about the family, so the extension is the only signal available.
-    _MEDIA_TYPE_BY_EXTENSION: dict[str, DerivedMediaType] = {
+    _MEDIA_TYPE_BY_EXTENSION: ClassVar[dict[str, DerivedMediaType]] = {
         ".mxf": "video",
         ".vob": "video",
         ".eot": "font",

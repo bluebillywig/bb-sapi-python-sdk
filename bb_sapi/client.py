@@ -24,11 +24,11 @@ from typing import Any, Optional
 
 import requests
 
+from bb_sapi._types import JsonDicts, StrList
 from bb_sapi.auth import HotpAuth
 from bb_sapi.entities.analytics import Analytics
 from bb_sapi.entities.lineitem import LineItem
 from bb_sapi.entities.mediaclip import MediaClip
-from bb_sapi.upload import TusUploader, UploadResult, UploadStatus
 from bb_sapi.exceptions import (
     SapiAnalyticsError,
     SapiAuthError,
@@ -38,6 +38,7 @@ from bb_sapi.exceptions import (
     SapiNotFoundError,
     SapiServerError,
 )
+from bb_sapi.upload import TusUploader, UploadResult, UploadStatus
 
 # Analytics base path (separate subdomain/path from regular SAPI)
 _ANALYTICS_PATH = "/sapi/analytics"
@@ -232,7 +233,7 @@ class SapiClient:
             method, f"/sapi/{entity}/{action_name}", json=data, params=params
         )
 
-    def versions(self, entity: str, entity_id: str | int) -> list[dict[str, Any]]:
+    def versions(self, entity: str, entity_id: str | int) -> JsonDicts:
         """
         Return the version history for any entity that supports it, newest first.
 
@@ -315,7 +316,7 @@ class SapiClient:
         *,
         title: Optional[str] = None,
         description: Optional[str] = None,
-        tags: Optional[list[str]] = None,
+        tags: Optional[StrList] = None,
         use_type: str = "editorial",
         status: str = "draft",
         extra_fields: Optional[dict[str, Any]] = None,

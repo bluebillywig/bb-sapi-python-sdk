@@ -1,5 +1,4 @@
 """Tests for TUS upload flow."""
-import io
 import json
 import os
 import tempfile
