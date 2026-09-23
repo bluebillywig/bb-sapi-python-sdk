@@ -3,9 +3,11 @@ MediaClip entity client for Blue Billywig SAPI.
 """
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any, Optional, Sequence
+from urllib.parse import quote
 
 from bb_sapi.exceptions import SapiError
+from bb_sapi.search import FilterSet
 
 if TYPE_CHECKING:
     from bb_sapi.client import SapiClient
@@ -56,6 +58,96 @@ class MediaClip:
             sort=sort,
             filters=f or None,
         )
+
+    def search_by_filterset(
+        self,
+        filter_set: FilterSet,
+        *,
+        limit: int = 15,
+        offset: int = 0,
+        sort: str = "createddate desc",
+        query: str = "*",
+        filter_queries: Optional[Sequence[str]] = None,
+    ) -> dict[str, Any]:
+        """
+        Search MediaClips using a filterset.
+
+        The filtered counterpart to :meth:`list`, which can only page and sort.
+        Distinct from :meth:`search`, which is a free-text query against
+        ``/papi/search``; this filters ``/sapi/mediaclip``.
+        A filterset is the same structure the OVP builds in its filter UI, so a
+        search moves between the OVP, the API and this SDK unchanged::
+
+            filter_set = (
+                FilterSet()
+                .where("status", "is", "published")
+                .where("title", "contains", "koert")
+            )
+            client.mediaclip.search_by_filterset(filter_set)
+
+        The filterset goes over the wire as JSON and SAPI compiles it, exactly
+        as the OVP does. It is deliberately not compiled here: that would be a
+        second implementation of semantics the server owns, and a filter SAPI
+        cannot read is ignored silently — HTTP 200, with neither ``numfound``
+        nor ``items``.
+
+        Args:
+            filter_set:     Groups are AND-ed, filters within a group OR-ed.
+            filter_queries: Raw Solr filters, for the rare thing a filterset
+                cannot express. NOTE the encoding: these go out as ``fq[0]=``;
+                SAPI ignores a plain ``fq=`` and a nested ``fq[][0]=``, in both
+                cases without an error.
+        """
+        params: dict[str, str] = {"q": query}
+        if not filter_set.is_empty():
+            params["filterset"] = filter_set.to_json()
+        for index, filter_query in enumerate(filter_queries or []):
+            params[f"fq[{index}]"] = filter_query
+
+        return self._client.list(
+            "mediaclip",
+            limit=limit,
+            offset=offset,
+            sort=sort,
+            params=params,
+        )
+
+    def get_poster_path(
+        self,
+        clip_id: str | int,
+        width: str | int = "default",
+        height: str | int = "default",
+        *,
+        rpc_token: Optional[str] = None,
+    ) -> str:
+        """
+        Absolute URL of a media clip's poster image.
+
+        Use this rather than building a URL from the clip payload. A clip's
+        src is its SOURCE MEDIA file, so defaultMediaAssetPath + src
+        yields a link to a .mov — the service says as much, answering
+        "Invalid src mime type: video/quicktime". That mistake shows up as a
+        grid full of broken images.
+
+        "default" is accepted for either dimension and lets the service
+        choose. A dimension that is not a plain number falls back to
+        "default" rather than entering the URL path.
+
+        A draft (unpublished) clip's poster is not public. Pass an RPC token —
+        minted from the READ-ONLY key, never the write key, because this URL
+        ends up in page source — to see those.
+        """
+        def dimension(value: str | int) -> str:
+            text = str(value)
+            return text if text.isdigit() and len(text) <= 5 else "default"
+
+        url = (
+            f"{self._client.base_url}/mediaclip/{quote(str(clip_id), safe='')}"
+            f"/spthumbnail/{dimension(width)}/{dimension(height)}.webp"
+        )
+        if rpc_token:
+            url += "?useSession=true&rpctoken=" + quote(rpc_token, safe="")
+        return url
 
     def create(self, data: dict[str, Any]) -> dict[str, Any]:
         """Create a new MediaClip."""
