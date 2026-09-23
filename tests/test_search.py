@@ -12,7 +12,9 @@ from urllib.parse import parse_qs, urlparse
 
 import responses as resp_lib
 
-from bb_sapi import Filter, FilterSet, SapiClient
+import pytest
+
+from bb_sapi import KNOWN_OPERATORS, Filter, FilterSet, SapiClient
 
 BASE_URL = "https://test.bbvms.com"
 SECRET = "490-deadbeef"
@@ -141,6 +143,30 @@ class TestFilterSet:
     def test_junk_produces_no_filters_rather_than_an_error(self):
         for junk in (42, None, {"nope": True}, ["not a dict"], [{"filters": "nope"}]):
             assert FilterSet.from_data(junk).to_list() == []
+
+    def test_an_unknown_operator_is_rejected_not_forwarded(self):
+        # FilterOperator is a Literal — advisory, and this repo runs no type
+        # checker, so it stops nothing. An operator SAPI cannot read is not an
+        # error there: it is ignored and the answer is HTTP 200 with neither
+        # numfound nor items, indistinguishable from an empty library. The PHP
+        # sibling raises InvalidArgumentException on the same input.
+        with pytest.raises(ValueError, match="conatins"):
+            FilterSet().where("title", "conatins", "koert")
+
+        with pytest.raises(ValueError, match="equals"):
+            Filter("status", "equals", "published")
+
+        with pytest.raises(ValueError, match="equals"):
+            FilterSet.from_data(
+                [{"filters": [{"field": "status", "operator": "equals", "value": "published"}]}]
+            )
+
+    def test_every_advertised_operator_is_accepted(self):
+        # Pins the Literal and the runtime set to one another: an operator added
+        # to FilterOperator is accepted, one removed stops being.
+        assert len(KNOWN_OPERATORS) == 17
+        for operator in KNOWN_OPERATORS:
+            assert FilterSet().where("status", operator, "x").to_list()
 
     def test_truthiness_follows_emptiness(self):
         assert not FilterSet()

@@ -23,7 +23,7 @@ Server-side quirks a caller inherits (the compiler is formatengine's):
 from __future__ import annotations
 
 import json
-from typing import Any, Iterable, Literal, Optional, Sequence, Union
+from typing import Any, Iterable, Literal, Optional, Sequence, Union, get_args
 
 FilterOperator = Literal[
     "is",
@@ -45,8 +45,31 @@ FilterOperator = Literal[
     "isNotInTheLast",
 ]
 
+#: The same operators at runtime. ``FilterOperator`` is a ``Literal``: advisory
+#: only, and this repo runs no type checker, so it stops nothing on its own.
+#: Derived from the alias rather than retyped, so the two cannot drift.
+KNOWN_OPERATORS = frozenset(get_args(FilterOperator))
+
 #: Operators that test presence, so they mean something without a value.
 VALUELESS_OPERATORS = frozenset({"isEmpty", "isNotEmpty"})
+
+
+def _check_operator(operator: Any) -> str:
+    """
+    An operator SAPI cannot read is not an error there: it is ignored, and the
+    answer is HTTP 200 carrying neither ``numfound`` nor ``items`` —
+    indistinguishable from an empty library. That is the failure class this
+    module exists to defeat, so a typo ("conatins", or "equals" for "is") is
+    rejected here instead of going over the wire. The PHP sibling rejects the
+    same input with InvalidArgumentException.
+    """
+    if operator not in KNOWN_OPERATORS:
+        raise ValueError(
+            f"Unknown filter operator {operator!r}. FilterOperator mirrors the operators "
+            f"the OVP/formatengine understand; extend it if a new one has been added. "
+            f"Known: {', '.join(sorted(KNOWN_OPERATORS))}."
+        )
+    return operator
 
 #: Numbers and booleans are accepted and normalised to strings on the wire:
 #: the backend's compiler mangles a JSON true into "1" (which matches
@@ -75,8 +98,9 @@ class Filter:
         value: FilterValue = None,
         type: Optional[str] = None,
     ) -> None:
+        """:raises ValueError: if ``operator`` is not one SAPI understands."""
         self.field = field
-        self.operator = operator
+        self.operator = _check_operator(operator)
         self.value = value
         self.type = type
 
@@ -124,7 +148,10 @@ class FilterSet:
             .where("title", "contains", "koert")
         )
 
-        client.mediaclip.search(filter_set)
+        client.mediaclip.search_by_filterset(filter_set)
+
+    ``search_by_filterset`` is the filtered call; ``search()`` is the free-text
+    ``/papi/search`` one and takes no filterset.
     """
 
     __slots__ = ("_groups",)
@@ -137,6 +164,11 @@ class FilterSet:
         """
         Build from raw data: a bare list of groups, or the ``SearchRequest``
         envelope OVP6 sends.
+
+        This is the ingestion boundary — OVP envelopes, Automations payloads,
+        stored filtersets — so it is where a malformed operator is most likely.
+
+        :raises ValueError: if a filter carries an operator SAPI does not know.
         """
         if isinstance(data, str):
             data = json.loads(data)
@@ -160,7 +192,10 @@ class FilterSet:
                 if not isinstance(operator, str) or operator == "":
                     # A filter without an operator is junk — skipping it beats
                     # silently guessing "is", which would invent a condition
-                    # the author never wrote.
+                    # the author never wrote. An operator that IS there but is
+                    # not one SAPI knows is a different case: it is a typo, and
+                    # Filter() raises on it rather than letting it reach the
+                    # wire, where it would read as an empty library.
                     continue
                 filters.append(
                     Filter(str(f.get("field", "")), operator, f.get("value"), f.get("type") or None)
