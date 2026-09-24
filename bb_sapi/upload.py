@@ -38,6 +38,10 @@ from bb_sapi.exceptions import SapiError
 if TYPE_CHECKING:
     from bb_sapi.client import SapiClient
 
+# S3's minimum multipart part size, and the size the server uses when it does
+# not say. The part count is derived from it, so there must be only one.
+DEFAULT_PART_SIZE = 5 * 1024 * 1024
+
 
 #: Every ``mediatype`` the SAPI recognises. ``interactive`` exists on the
 #: backend but is never produced from a local file.
@@ -222,7 +226,16 @@ class TusUploader:
             if use_type is not None:
                 clip_updates["usetype"] = use_type
             if clip_updates:
-                self._client.update("mediaclip", str(mediaclip_id), clip_updates)
+                try:
+                    self._client.update("mediaclip", str(mediaclip_id), clip_updates)
+                except Exception as exc:
+                    raise SapiError(
+                        f"The upload of {file_name!r} to mediaclip {mediaclip_id} "
+                        f"succeeded, but setting {', '.join(sorted(clip_updates))} "
+                        f"on it failed: {exc} Retry only that with "
+                        f"client.update('mediaclip', {str(mediaclip_id)!r}, ...) — "
+                        f"do not upload again."
+                    ) from exc
 
         return UploadResult(
             tus_upload_id=tus_upload_id,
@@ -278,12 +291,26 @@ class TusUploader:
                           (default) or ``"published"``.
             extra_fields: Any additional fields to include when creating the
                           entity. These override every derived and explicit
-                          field above, including ``mediatype`` and ``title``.
+                          field above, including ``mediatype`` and ``title`` —
+                          except ``status``, which is refused here: pass it as
+                          ``status`` so it is applied only once the file lands.
             on_progress:  Optional callback ``(bytes_uploaded, total_bytes)``.
 
         Returns:
             :class:`UploadResult` including the ``mediaclip_id``.
+
+        Raises:
+            SapiError: If ``extra_fields`` contains ``status``, before anything
+                is created.
         """
+        if extra_fields and "status" in extra_fields:
+            raise SapiError(
+                "create_mediaclip() does not take status in extra_fields: the clip "
+                "is created as a draft and moved to its status only once the file "
+                "has landed, and a status in extra_fields would bypass that. Pass "
+                f"status={extra_fields['status']!r} instead."
+            )
+
         path = Path(file_path)
         file_name = path.name
         file_name_no_ext = path.stem
@@ -347,7 +374,17 @@ class TusUploader:
 
         # Step 5 — the media is in place, so the clip can take its real status.
         if status != "draft":
-            self._client.update("mediaclip", clip_id, {"status": status})
+            try:
+                self._client.update("mediaclip", clip_id, {"status": status})
+            except Exception as exc:
+                raise SapiError(
+                    f"The upload of {file_name!r} to mediaclip {clip_id} succeeded "
+                    f"and the clip is a draft, but setting its status to "
+                    f"{status!r} failed: {exc} Retry only that with "
+                    f"client.update('mediaclip', {clip_id!r}, "
+                    f"{{'status': {status!r}}}) — do not upload again, or a second "
+                    f"clip is created."
+                ) from exc
 
         return UploadResult(
             tus_upload_id=tus_upload_id,
@@ -388,12 +425,25 @@ class TusUploader:
             tus_data = {}
         s3_info = tus_data.get("s3", {}) if isinstance(tus_data, dict) else {}
 
+        def _as_int(name: str, value: Any) -> int:
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                raise SapiError(
+                    f"The status of TUS upload {tus_upload_id} has a non-numeric "
+                    f"{name}: {value!r}."
+                ) from None
+
         length_header = resp.headers.get("Upload-Length")
         return UploadStatus(
             tus_upload_id=tus_upload_id,
-            offset=int(resp.headers.get("Upload-Offset", 0)),
-            length=int(length_header) if length_header is not None else None,
-            part_size=int(s3_info.get("partSize", 5 * 1024 * 1024)),
+            offset=_as_int("Upload-Offset", resp.headers.get("Upload-Offset", 0)),
+            length=(
+                _as_int("Upload-Length", length_header)
+                if length_header is not None
+                else None
+            ),
+            part_size=_as_int("s3.partSize", s3_info.get("partSize", DEFAULT_PART_SIZE)),
             uploaded_parts=s3_info.get("uploadedParts", []),
         )
 
@@ -558,7 +608,7 @@ class TusUploader:
                 f"nothing can be uploaded."
             )
 
-        part_size: int = s3_info.get("partSize", 5 * 1024 * 1024)
+        part_size: int = s3_info.get("partSize", DEFAULT_PART_SIZE)
         if part_size <= 0:
             raise SapiError(
                 f"The server reported an unusable part size ({part_size}) for "
@@ -568,7 +618,7 @@ class TusUploader:
         # The server decides how many parts there are; the byte offsets are
         # computed here. If the two disagree, the stored object would silently
         # not match the file.
-        expected_parts = max(1, math.ceil(file_size / part_size))
+        expected_parts = math.ceil(file_size / part_size)  # file_size >= 1
         if len(presigned_urls) != expected_parts:
             raise SapiError(
                 f"The server returned {len(presigned_urls)} presigned URLs but "

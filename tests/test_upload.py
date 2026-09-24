@@ -700,6 +700,44 @@ def test_publish_only_happens_after_the_upload_lands():
         os.unlink(path)
 
 
+def test_status_in_extra_fields_is_refused_before_anything_is_created():
+    """extra_fields={'status': 'published'} would bypass the draft-first rule."""
+    path = make_temp_file(b"data")
+    try:
+        with resp_lib.RequestsMock() as rsps:  # any request fails the test
+            with pytest.raises(SapiError, match=r"status='published' instead"):
+                make_client().create_mediaclip(path, extra_fields={"status": "published"})
+            assert len(rsps.calls) == 0
+    finally:
+        os.unlink(path)
+
+
+@resp_lib.activate
+def test_failed_publish_says_the_upload_succeeded_and_names_the_clip():
+    resp_lib.add(resp_lib.POST, f"{BASE_URL}/sapi/mediaclip/new", json={"id": 7})
+    resp_lib.add(resp_lib.POST, f"{BASE_URL}/sapi/tus", json=TUS_CREATE_RESPONSE)
+    resp_lib.add(
+        resp_lib.PUT, "https://s3.example.com/upload", status=200, headers={"ETag": '"e"'}
+    )
+    resp_lib.add(
+        resp_lib.POST, f"{BASE_URL}/sapi/tus/abc123/complete", json={"success": True}
+    )
+    resp_lib.add(resp_lib.PUT, f"{BASE_URL}/sapi/mediaclip/7", status=500, json={"error": "boom"})
+
+    path = make_temp_file(b"data")
+    try:
+        with pytest.raises(SapiError) as info:
+            make_client().create_mediaclip(path, status="published")
+        message = str(info.value)
+        assert "succeeded" in message
+        assert "mediaclip 7" in message
+        assert "do not upload again" in message
+        # The upload itself was not aborted: the media is good.
+        assert not any(c.request.method == "DELETE" for c in resp_lib.calls)
+    finally:
+        os.unlink(path)
+
+
 # ---------------------------------------------------------------------------
 # title / use_type on upload_file
 # ---------------------------------------------------------------------------
@@ -736,6 +774,30 @@ def test_upload_file_applies_title_and_use_type_to_the_mediaclip():
         os.unlink(path)
 
 
+@resp_lib.activate
+def test_failed_metadata_update_says_the_upload_succeeded_and_names_the_clip():
+    resp_lib.add(resp_lib.POST, f"{BASE_URL}/sapi/tus", json=TUS_CREATE_RESPONSE)
+    resp_lib.add(
+        resp_lib.PUT, "https://s3.example.com/upload", status=200, headers={"ETag": '"e"'}
+    )
+    resp_lib.add(
+        resp_lib.POST, f"{BASE_URL}/sapi/tus/abc123/complete", json={"success": True}
+    )
+    resp_lib.add(resp_lib.PUT, f"{BASE_URL}/sapi/mediaclip/99", status=500, json={"error": "boom"})
+
+    path = make_temp_file()
+    try:
+        with pytest.raises(SapiError) as info:
+            make_client().upload_file(path, mediaclip_id="99", title="Hero")
+        message = str(info.value)
+        assert "succeeded" in message
+        assert "mediaclip 99" in message
+        assert "title" in message
+        assert not any(c.request.method == "DELETE" for c in resp_lib.calls)
+    finally:
+        os.unlink(path)
+
+
 # ---------------------------------------------------------------------------
 # Upload lifecycle: status, sign, abort
 # ---------------------------------------------------------------------------
@@ -759,6 +821,21 @@ def test_upload_status_reads_offset_and_parts_from_headers():
     assert (status.offset, status.length, status.part_size) == (10, 25, 10)
     assert status.uploaded_parts == [{"PartNumber": 1, "Size": 10, "ETag": '"e1"'}]
     assert status.is_complete is False
+
+
+@pytest.mark.parametrize(
+    "headers",
+    [
+        {"Upload-Offset": "ten", "Upload-Length": "25"},
+        {"Upload-Offset": "10", "Upload-Length": "?"},
+        {"Upload-Offset": "10", "X-Tus-Data": json.dumps({"s3": {"partSize": "big"}})},
+    ],
+)
+@resp_lib.activate
+def test_upload_status_turns_a_non_numeric_header_into_a_sapi_error(headers):
+    resp_lib.add(resp_lib.HEAD, f"{BASE_URL}/sapi/tus/abc123", status=200, headers=headers)
+    with pytest.raises(SapiError, match="non-numeric"):
+        make_client().upload_status("abc123")
 
 
 @resp_lib.activate

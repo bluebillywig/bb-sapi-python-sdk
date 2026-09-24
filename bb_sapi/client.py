@@ -336,7 +336,8 @@ class SapiClient:
                           created as a draft first, so a failed upload cannot
                           leave a published clip with no media.
             extra_fields: Additional fields for the mediaclip entity. These
-                          override every derived and explicit field above.
+                          override every derived and explicit field above,
+                          except ``status``, which is refused: pass ``status``.
             on_progress:  Optional ``(bytes_uploaded, total_bytes)`` callback.
 
         Returns:
