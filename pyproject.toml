@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "bb-sapi-python-sdk"
-version = "0.1.0"
+version = "1.1.0"
 description = "Python SDK for the Blue Billywig Streaming API (SAPI)"
 readme = "README.md"
 license = { text = "MIT" }
@@ -21,6 +21,9 @@ classifiers = [
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Typing :: Typed",
     "Topic :: Internet :: WWW/HTTP",
     "Topic :: Multimedia :: Video",
 ]
@@ -39,10 +42,35 @@ dev = [
     "pytest-mock>=3",
     "responses>=0.25",
     "openpyxl>=3.1",   # for the analytics export example
+    "mypy>=1.11",
+    "ruff>=0.6",
+    "types-requests",
 ]
 
 [tool.hatch.build.targets.wheel]
 packages = ["bb_sapi"]
+# Ship the PEP 561 marker so the annotations reach consumers' type checkers.
+artifacts = ["bb_sapi/py.typed"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+
+[tool.ruff.lint]
+# Correctness and hygiene only. The pyupgrade (UP) rules are deliberately left
+# out: they would rewrite 75 `Optional[X]` annotations to `X | None` across the
+# package, which is churn rather than a fix. RUF002 is out because the em dashes
+# it objects to are this codebase's house style.
+select = ["F", "E9", "I", "RUF012", "RUF022"]
+
+[tool.mypy]
+python_version = "3.10"
+files = ["bb_sapi"]
+ignore_missing_imports = true
+# Not strict: the goal is to catch annotations that are wrong, not to require
+# every function to be annotated. Tighten once the package is fully typed.
+warn_unused_ignores = true
+warn_redundant_casts = true

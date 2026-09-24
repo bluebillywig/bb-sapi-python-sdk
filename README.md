@@ -197,16 +197,34 @@ where the entity already exists or is managed separately.
 ```python
 result = client.upload_file(
     "/tmp/ad_creative.mp4",
-    use_type="commercial",       # "commercial" (ad) or "editorial" (content)
-    mediaclip_id="12345",        # optional: attach to existing mediaclip
+    mediaclip_id="12345",        # optional: attach to an existing mediaclip
+    use_type="commercial",       # needs mediaclip_id — see below
 )
 print(result.tus_upload_id)      # TUS upload ID
 print(result.s3_key)             # S3 object key
 ```
 
-### Create a mediaclip with a video file
+`title` and `use_type` are applied to `mediaclip_id` once the upload lands, so
+they require it. Passing either without a `mediaclip_id` raises `SapiError`
+rather than silently doing nothing — there is no entity to set them on.
+
+### Create a mediaclip with a file
 
 Full OVP6 workflow: creates the mediaclip entity first, then uploads the file.
+
+The entity's `mediatype` is derived from the file extension: `video`, `audio`,
+`image` and `font` files map to the mediatype of the same name, and anything
+else (subtitles, PDFs, unrecognised binary) becomes a `document`. Pass
+`extra_fields={"mediatype": ...}` to decide it yourself.
+
+This is a local best guess, not a copy of the backend's own logic. The backend
+re-derives the mediatype from the uploaded file during ingest, so the value
+sent here need not be the final one.
+
+The clip is always created as a `draft` and only moved to `status` once the
+file has landed, so a failed upload cannot leave a published clip with no
+media. If a step after the entity is created fails, the S3 upload is aborted
+and the error names the clip ID so you can remove the empty entity.
 
 ```python
 result = client.create_mediaclip(
@@ -244,8 +262,29 @@ PUT  <presigned_url>  (×N parts)  ← upload chunks directly to S3
   ← collect ETag from each response
 
 POST /sapi/tus/{id}/complete      ← finalise multipart upload
-  [{PartNumber, ETag}, ...]
+  {"parts": [{PartNumber, ETag}, ...]}
+  ETags are sent exactly as S3 returned them, quotes included.
 ```
+
+Before finalising, the SDK checks that the parts it uploaded actually cover the
+file, so a disagreement between the server's part count and the local chunking
+fails loudly instead of storing a truncated object.
+
+### Resuming and cleaning up
+
+```python
+status = client.upload_status(tus_upload_id)   # HEAD  /sapi/tus/{id}
+status.offset, status.length, status.uploaded_parts
+status.is_complete
+
+url = client.sign_part(tus_upload_id, 3)       # GET   /sapi/tus/{id}/sign/3
+client.abort_upload(tus_upload_id)             # DELETE /sapi/tus/{id}
+```
+
+Part uploads that fail with a transient 5xx are retried, and a part whose
+presigned URL has expired (HTTP 403) is re-signed and sent again. A failed
+upload aborts itself, so `abort_upload` is only needed to clean up after a
+crash — or when an error message tells you to.
 
 ## LineItem version history
 
