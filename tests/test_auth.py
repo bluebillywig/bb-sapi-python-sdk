@@ -1,7 +1,7 @@
 """Tests for HotpAuth."""
-import struct
 import hashlib
 import hmac
+import struct
 
 import pytest
 
