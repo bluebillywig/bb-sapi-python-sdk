@@ -2,8 +2,8 @@ name: Create release
 on:
   workflow_dispatch:
     inputs:
-      patch:
-        description: "Patch version override (leave empty to auto-increment from latest)"
+      version:
+        description: "Version override, e.g. 1.1.0. Leave empty to use the version in pyproject.toml (the normal case)."
         required: false
         type: string
 
@@ -25,40 +25,86 @@ jobs:
         with:
           fetch-tags: true
 
-      - name: Determine version
+      # pyproject.toml is the single source of truth for the version: it is what
+      # reviewers see in the PR, what publish.yaml stamps into the wheel, and
+      # what bb_sapi.__version__ reports at runtime.
+      #
+      # This step used to guess the version by incrementing the newest GitHub
+      # release tag instead. That is a second, independent source of truth, and
+      # the two drifted: 1.0.0 was published to PyPI without ever being tagged,
+      # so the guess restarted at 1.0.0 and would have failed against a version
+      # PyPI already had.
+      - name: Resolve version
         id: version
         env:
-          GH_TOKEN: ${{ secrets.PAT_GITHUB_TOKEN }}
+          VERSION_OVERRIDE: ${{ inputs.version }}
         run: |
-          MAJOR_MINOR="${GITHUB_REF_NAME#release/v}"
+          set -euo pipefail
 
-          if [[ -n "${{ inputs.patch }}" ]]; then
-            PATCH="${{ inputs.patch }}"
+          if [[ -n "$VERSION_OVERRIDE" ]]; then
+            VERSION="$VERSION_OVERRIDE"
+            echo "Using the supplied override: $VERSION"
           else
-            # Find the latest patch version for this major.minor
-            LATEST_TAG=$(gh release list --json tagName -q '.[].tagName' \
-              | grep -E "^v${MAJOR_MINOR}\.[0-9]+$" \
-              | sort -V \
-              | tail -n 1)
-
-            if [[ -n "$LATEST_TAG" ]]; then
-              LATEST_PATCH="${LATEST_TAG##*.}"
-              PATCH=$((LATEST_PATCH + 1))
-            else
-              PATCH=0
-            fi
+            VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' pyproject.toml | head -n 1)
+            echo "Using the version declared in pyproject.toml: $VERSION"
           fi
 
-          VERSION="${MAJOR_MINOR}.${PATCH}"
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::'$VERSION' is not a major.minor.patch version."
+            exit 1
+          fi
+
+          # A release cut from release/v1.1 must be a 1.1.x. Without this, an
+          # un-bumped pyproject would quietly tag the wrong line.
+          MAJOR_MINOR="${GITHUB_REF_NAME#release/v}"
+          if [[ "$VERSION" != "$MAJOR_MINOR."* ]]; then
+            echo "::error::Version $VERSION does not belong on branch $GITHUB_REF_NAME."
+            echo "::error::Bump pyproject.toml to a ${MAJOR_MINOR}.x version, or cut this release from release/v${VERSION%.*}."
+            exit 1
+          fi
+
+          PACKAGE=$(sed -n 's/^name = "\(.*\)"/\1/p' pyproject.toml | head -n 1)
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
-          echo "Resolved version: $VERSION"
+          echo "package=$PACKAGE" >> "$GITHUB_OUTPUT"
+
+      # Fail here, with an explanation, rather than in publish.yaml with an
+      # opaque 400 from PyPI. A version can only be uploaded once.
+      - name: Refuse to re-release an existing version
+        env:
+          GH_TOKEN: ${{ secrets.PAT_GITHUB_TOKEN }}
+          TAG: ${{ steps.version.outputs.tag }}
+          VERSION: ${{ steps.version.outputs.version }}
+          PACKAGE: ${{ steps.version.outputs.package }}
+        run: |
+          set -euo pipefail
+
+          if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+            echo "::error::Tag $TAG already exists. Bump the version in pyproject.toml."
+            exit 1
+          fi
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "::error::Release $TAG already exists. Bump the version in pyproject.toml."
+            exit 1
+          fi
+
+          STATUS=$(curl -s -o /dev/null -w '%{http_code}' \
+            "https://pypi.org/pypi/${PACKAGE}/${VERSION}/json")
+          if [[ "$STATUS" == "200" ]]; then
+            echo "::error::${PACKAGE} ${VERSION} is already on PyPI, which never accepts the same version twice."
+            echo "::error::Bump the version in pyproject.toml and try again."
+            exit 1
+          fi
+          echo "$PACKAGE $VERSION is free to publish (PyPI answered $STATUS)."
 
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ secrets.PAT_GITHUB_TOKEN }}
+          TAG: ${{ steps.version.outputs.tag }}
         run: |
-          gh release create "${{ steps.version.outputs.tag }}" \
-            --target "${{ github.ref_name }}" \
-            --title "${{ steps.version.outputs.tag }}" \
+          set -euo pipefail
+          gh release create "$TAG" \
+            --target "$GITHUB_REF_NAME" \
+            --title "$TAG" \
             --generate-notes

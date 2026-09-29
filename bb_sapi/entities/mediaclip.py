@@ -6,6 +6,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, Optional, Sequence
 from urllib.parse import quote
 
+from bb_sapi._types import JsonDicts
 from bb_sapi.exceptions import SapiError
 from bb_sapi.search import FilterSet
 
@@ -197,7 +198,7 @@ class MediaClip:
         limit: int = 100,
         offset: int = 0,
         sort: str = "views DESC",
-    ) -> list[dict[str, Any]]:
+    ) -> JsonDicts:
         """
         Return content MediaClips, excluding ad creatives (``usetype: commercial``).
 
