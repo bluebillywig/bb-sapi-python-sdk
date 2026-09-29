@@ -16,10 +16,10 @@ from bb_sapi.search import KNOWN_OPERATORS, Filter, FilterOperator, FilterSet
 from bb_sapi.upload import MediaType, UploadResult, UploadStatus
 
 __all__ = [
-    "FilterSet",
+    "KNOWN_OPERATORS",
     "Filter",
     "FilterOperator",
-    "KNOWN_OPERATORS",
+    "FilterSet",
     "MediaType",
     "SapiAnalyticsError",
     "SapiAuthError",

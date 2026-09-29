@@ -10,9 +10,8 @@ video 3679).
 import json
 from urllib.parse import parse_qs, urlparse
 
-import responses as resp_lib
-
 import pytest
+import responses as resp_lib
 
 from bb_sapi import KNOWN_OPERATORS, Filter, FilterSet, SapiClient
 
