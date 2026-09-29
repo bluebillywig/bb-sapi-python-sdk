@@ -23,7 +23,7 @@ Server-side quirks a caller inherits (the compiler is formatengine's):
 from __future__ import annotations
 
 import json
-from typing import Any, Iterable, Literal, Optional, Sequence, Union, get_args
+from typing import Any, Iterable, Literal, Optional, Sequence, Union, cast, get_args
 
 FilterOperator = Literal[
     "is",
@@ -197,8 +197,15 @@ class FilterSet:
                     # Filter() raises on it rather than letting it reach the
                     # wire, where it would read as an empty library.
                     continue
+                # cast: Filter() validates the operator itself and raises on an
+                # unknown one, so the unchecked str is passed through on purpose.
                 filters.append(
-                    Filter(str(f.get("field", "")), operator, f.get("value"), f.get("type") or None)
+                    Filter(
+                        str(f.get("field", "")),
+                        cast(FilterOperator, operator),
+                        f.get("value"),
+                        f.get("type") or None,
+                    )
                 )
             groups.append(filters)
         return cls(groups)
