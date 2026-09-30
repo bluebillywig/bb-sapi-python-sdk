@@ -12,9 +12,14 @@ from bb_sapi.exceptions import (
     SapiNotFoundError,
     SapiServerError,
 )
+from bb_sapi.search import KNOWN_OPERATORS, Filter, FilterOperator, FilterSet
 from bb_sapi.upload import MediaType, UploadResult, UploadStatus
 
 __all__ = [
+    "KNOWN_OPERATORS",
+    "Filter",
+    "FilterOperator",
+    "FilterSet",
     "MediaType",
     "SapiAnalyticsError",
     "SapiAuthError",
