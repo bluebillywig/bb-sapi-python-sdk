@@ -1,7 +1,9 @@
 """Tests for TUS upload flow."""
 import json
+import mimetypes
 import os
 import tempfile
+from pathlib import Path
 
 import pytest
 import responses as resp_lib
@@ -330,25 +332,82 @@ def test_media_type_mapping(content_type, expected):
     assert uploader._media_type(content_type) == expected
 
 
+class _NoMimeDatabase:
+    """Stands in for :mod:`mimetypes` on a host that knows no extensions at all."""
+
+    @staticmethod
+    def guess_type(url, strict=True):
+        return None, None
+
+
+@pytest.fixture(params=["host", "empty", "stdlib-only"])
+def mime_db(request, monkeypatch):
+    """Run a test against the host's MIME database and against hosts without one.
+
+    ``empty`` is a database that knows nothing. ``stdlib-only`` is Python's own
+    built-in table with no OS file or registry behind it — what a host without
+    ``/etc/mime.types`` or matching registry entries gives you. Before Python
+    3.14 that table has no font types, so without these cases CI on Linux,
+    which has ``/etc/mime.types``, passes whatever the SDK does for fonts.
+    """
+    if request.param == "empty":
+        monkeypatch.setattr("bb_sapi.upload.mimetypes", _NoMimeDatabase)
+    elif request.param == "stdlib-only":
+        monkeypatch.setattr(
+            "bb_sapi.upload.mimetypes.guess_type", mimetypes.MimeTypes().guess_type
+        )
+    return request.param
+
+
+#: (suffix, TUS filetype, mediatype) for every extension the SDK's table covers.
+MEDIATYPE_CASES = [
+    (".mp4", "video/mp4", "video"),
+    (".m4v", "video/x-m4v", "video"),
+    (".mov", "video/quicktime", "video"),
+    (".avi", "video/x-msvideo", "video"),
+    (".mkv", "video/x-matroska", "video"),
+    (".webm", "video/webm", "video"),
+    (".wmv", "video/x-ms-wmv", "video"),    # unknown to the stdlib table before 3.14
+    (".vob", "video/x-ms-vob", "video"),
+    (".mpg", "video/mpeg", "video"),
+    (".mpeg", "video/mpeg", "video"),
+    (".mxf", "application/mxf", "video"),   # MIME type carries no family
+    (".mp3", "audio/mpeg", "audio"),
+    (".m4a", "audio/mp4", "audio"),
+    (".aac", "audio/aac", "audio"),
+    (".wav", "audio/wav", "audio"),
+    (".flac", "audio/flac", "audio"),       # unknown to the stdlib table before 3.14
+    (".jpg", "image/jpeg", "image"),
+    (".jpeg", "image/jpeg", "image"),
+    (".png", "image/png", "image"),
+    (".gif", "image/gif", "image"),
+    (".webp", "image/webp", "image"),
+    (".bmp", "image/bmp", "image"),
+    (".ttf", "font/ttf", "font"),           # originalfilename is public only for fonts
+    (".otf", "font/otf", "font"),
+    (".woff", "font/woff", "font"),
+    (".woff2", "font/woff2", "font"),
+    (".eot", "application/vnd.ms-fontobject", "font"),  # MIME type carries no family
+    (".srt", "application/x-subrip", "document"),       # the old code called it "audio"
+    (".vtt", "text/vtt", "document"),
+    (".pdf", "application/pdf", "document"),
+]
+
+
+def test_every_extension_in_the_table_has_a_mediatype_case():
+    """A table entry without a case here is not checked against an empty MIME database."""
+    assert {suffix for suffix, _, _ in MEDIATYPE_CASES} == set(TusUploader._CONTENT_TYPES)
+
+
 @resp_lib.activate
-@pytest.mark.parametrize(
-    "suffix,expected",
-    [
-        (".png", "image"),
-        (".bmp", "image"),      # absent from the SDK's own table
-        (".mp4", "video"),
-        (".wmv", "video"),      # absent from the SDK's own table
-        (".mxf", "video"),      # MIME type carries no family
-        (".mp3", "audio"),
-        (".flac", "audio"),     # absent from the SDK's own table
-        (".ttf", "font"),       # originalfilename is public only for fonts
-        (".eot", "font"),       # MIME type carries no family
-        (".pdf", "document"),
-        (".srt", "document"),   # the case the old code called "audio"
-    ],
-)
-def test_create_mediaclip_sends_correct_mediatype(suffix, expected):
-    """An image must not be created as an audio clip (shows a speaker icon in the OVP)."""
+@pytest.mark.parametrize("suffix,content_type,expected", MEDIATYPE_CASES)
+def test_create_mediaclip_sends_correct_mediatype(suffix, content_type, expected, mime_db):
+    """An image must not be created as an audio clip (shows a speaker icon in the OVP).
+
+    Runs once per ``mime_db``, because the answer must not depend on the host:
+    a ``.ttf`` created as a ``document`` from Windows on Python 3.10/3.11 is the
+    failure the empty cases reproduce.
+    """
     resp_lib.add(resp_lib.POST, f"{BASE_URL}/sapi/mediaclip/new", json={"id": 7})
     resp_lib.add(resp_lib.POST, f"{BASE_URL}/sapi/tus", json=TUS_CREATE_RESPONSE)
     resp_lib.add(
@@ -369,8 +428,66 @@ def test_create_mediaclip_sends_correct_mediatype(suffix, expected):
         client.create_mediaclip(path, title="Asset")
         body = json.loads(resp_lib.calls[0].request.body)
         assert body["mediatype"] == expected
+        # The TUS filetype becomes the S3 object's ContentType, which the
+        # backend reads again during ingest.
+        metadata = resp_lib.calls[1].request.headers["Upload-Metadata"]
+        assert f"filetype {_b64(content_type)}" in metadata.split(",")
     finally:
         os.unlink(path)
+
+
+@pytest.mark.parametrize(
+    "suffix,content_type",
+    [
+        (".ttf", "font/ttf"),
+        (".otf", "font/otf"),
+        (".woff", "font/woff"),
+        (".woff2", "font/woff2"),
+    ],
+)
+def test_font_content_type_ignores_a_host_database_that_disagrees(
+    suffix, content_type, monkeypatch
+):
+    """The TUS ``filetype`` for a font comes from the SDK's table, not the host.
+
+    Older ``mime.types`` files call a ``.ttf`` ``application/x-font-ttf``, which
+    has no ``font/`` family, so the clip would be created as a ``document``.
+    """
+    class _OldMimeTypesFile:
+        @staticmethod
+        def guess_type(url, strict=True):
+            return "application/x-font-ttf", None
+
+    monkeypatch.setattr("bb_sapi.upload.mimetypes", _OldMimeTypesFile)
+    uploader = TusUploader(make_client())
+
+    assert uploader._content_type(Path(f"a{suffix}")) == content_type
+    assert uploader._media_type(content_type, suffix) == "font"
+
+
+@pytest.mark.parametrize("name", ["FONT.TTF", "Logo.Woff2"])
+def test_uppercase_font_extension_is_still_a_font_without_a_mime_database(name, monkeypatch):
+    """Windows file names are often upper case; the table lookup must not care."""
+    monkeypatch.setattr("bb_sapi.upload.mimetypes", _NoMimeDatabase)
+    uploader = TusUploader(make_client())
+    path = Path(name)
+
+    assert uploader._media_type(uploader._content_type(path), path.suffix) == "font"
+
+
+def test_extension_outside_the_table_still_falls_back_to_mimetypes(monkeypatch):
+    """The table is the authority for what it lists, not a closed whitelist."""
+    class _KnowsTiff:
+        @staticmethod
+        def guess_type(url, strict=True):
+            return ("image/tiff", None) if url.endswith(".tiff") else (None, None)
+
+    monkeypatch.setattr("bb_sapi.upload.mimetypes", _KnowsTiff)
+    uploader = TusUploader(make_client())
+
+    assert ".tiff" not in TusUploader._CONTENT_TYPES
+    assert uploader._content_type(Path("scan.tiff")) == "image/tiff"
+    assert uploader._content_type(Path("blob.unknownext")) == "application/octet-stream"
 
 
 @resp_lib.activate
@@ -505,6 +622,98 @@ def test_multipart_upload_sends_each_chunk_and_orders_parts():
             ]
         }
         assert progress == [(10, 25), (20, 25), (25, 25)]
+    finally:
+        os.unlink(path)
+
+
+@resp_lib.activate
+def test_out_of_order_presigned_urls_still_complete_with_ascending_parts():
+    """S3 rejects a CompleteMultipartUpload whose PartNumbers are not ascending."""
+    shuffled = {
+        **MULTIPART_RESPONSE,
+        "s3": {**MULTIPART_RESPONSE["s3"], "presignedUrls": [
+            {"partNumber": 3, "url": "https://s3.example.com/p3"},
+            {"partNumber": 1, "url": "https://s3.example.com/p1"},
+            {"partNumber": 2, "url": "https://s3.example.com/p2"},
+        ]},
+    }
+    resp_lib.add(resp_lib.POST, f"{BASE_URL}/sapi/tus", json=shuffled)
+    for n in (1, 2, 3):
+        resp_lib.add(
+            resp_lib.PUT,
+            f"https://s3.example.com/p{n}",
+            status=200,
+            headers={"ETag": f'"etag{n}"'},
+        )
+    resp_lib.add(
+        resp_lib.POST,
+        f"{BASE_URL}/sapi/tus/multi1/complete",
+        json={"success": True, "key": "pub/media/big.mp4"},
+    )
+
+    path = make_temp_file(b"A" * 10 + b"B" * 10 + b"C" * 5)
+    try:
+        make_client().upload_file(path)
+
+        # Each part still carries its own bytes, whatever order it is sent in.
+        sent = {
+            c.request.url: c.request.body for c in resp_lib.calls if c.request.method == "PUT"
+        }
+        assert sent == {
+            "https://s3.example.com/p1": b"A" * 10,
+            "https://s3.example.com/p2": b"B" * 10,
+            "https://s3.example.com/p3": b"C" * 5,
+        }
+
+        complete = json.loads(resp_lib.calls[-1].request.body)
+        assert complete == {
+            "parts": [
+                {"PartNumber": 1, "ETag": '"etag1"'},
+                {"PartNumber": 2, "ETag": '"etag2"'},
+                {"PartNumber": 3, "ETag": '"etag3"'},
+            ]
+        }
+    finally:
+        os.unlink(path)
+
+
+@resp_lib.activate
+def test_tus_complete_sorts_parts_by_part_number():
+    resp_lib.add(
+        resp_lib.POST,
+        f"{BASE_URL}/sapi/tus/abc123/complete",
+        json={"status": "success"},
+    )
+    parts = [
+        {"PartNumber": 10, "ETag": '"e10"'},
+        {"PartNumber": 2, "ETag": '"e2"'},
+        {"PartNumber": 1, "ETag": '"e1"'},
+    ]
+    TusUploader(make_client())._tus_complete("abc123", parts)
+
+    sent = json.loads(resp_lib.calls[0].request.body)["parts"]
+    assert [p["PartNumber"] for p in sent] == [1, 2, 10]
+    assert sent[2] == {"PartNumber": 10, "ETag": '"e10"'}
+
+
+@resp_lib.activate
+@pytest.mark.parametrize("numbers", [[1, 1, 3], [0, 1, 2], [2, 3, 4]])
+def test_presigned_urls_must_cover_parts_one_to_n(numbers):
+    """A repeated or missing part number would leave part of the file unsent."""
+    wrong = {
+        **MULTIPART_RESPONSE,
+        "s3": {**MULTIPART_RESPONSE["s3"], "presignedUrls": [
+            {"partNumber": n, "url": f"https://s3.example.com/p{n}"} for n in numbers
+        ]},
+    }
+    resp_lib.add(resp_lib.POST, f"{BASE_URL}/sapi/tus", json=wrong)
+    resp_lib.add(resp_lib.DELETE, f"{BASE_URL}/sapi/tus/multi1", status=204)
+
+    path = make_temp_file(b"x" * 25)
+    try:
+        with pytest.raises(SapiError, match=r"not parts 1 to 3"):
+            make_client().upload_file(path)
+        assert not [c for c in resp_lib.calls if c.request.method == "PUT"]
     finally:
         os.unlink(path)
 
