@@ -106,22 +106,42 @@ class TusUploader:
     instead.
     """
 
-    #: Extensions whose MIME type the stdlib gets wrong, or does not know.
-    #: Anything absent here falls through to :mod:`mimetypes`.
+    #: The content type of every extension this SDK expects to upload. This
+    #: table, not :mod:`mimetypes`, is the authority for them: much of what
+    #: ``mimetypes`` knows comes from the host — ``/etc/mime.types`` on Linux,
+    #: the registry on Windows — and its own built-in table has no font types
+    #: before Python 3.14. Without an entry here, a ``.ttf`` uploaded from a
+    #: host whose MIME database does not list it, on Python 3.10–3.13, has no
+    #: MIME type and is created as a ``document``. Anything absent here falls
+    #: through to :mod:`mimetypes`.
     _CONTENT_TYPES: ClassVar[dict[str, str]] = {
         ".mp4": "video/mp4",
+        ".m4v": "video/x-m4v",
         ".mov": "video/quicktime",
         ".avi": "video/x-msvideo",
         ".mkv": "video/x-matroska",
         ".webm": "video/webm",
+        ".wmv": "video/x-ms-wmv",
+        ".vob": "video/x-ms-vob",
+        ".mpg": "video/mpeg",
+        ".mpeg": "video/mpeg",
+        ".mxf": "application/mxf",
         ".mp3": "audio/mpeg",
+        ".m4a": "audio/mp4",
         ".aac": "audio/aac",
         ".wav": "audio/wav",
+        ".flac": "audio/flac",
         ".jpg": "image/jpeg",
         ".jpeg": "image/jpeg",
         ".png": "image/png",
         ".gif": "image/gif",
         ".webp": "image/webp",
+        ".bmp": "image/bmp",
+        ".ttf": "font/ttf",
+        ".otf": "font/otf",
+        ".woff": "font/woff",
+        ".woff2": "font/woff2",
+        ".eot": "application/vnd.ms-fontobject",
         ".srt": "application/x-subrip",
         ".vtt": "text/vtt",
         ".pdf": "application/pdf",
@@ -562,10 +582,15 @@ class TusUploader:
             **self._client._auth.headers(),
             "Tus-Resumable": "1.0.0",
         }
+        # S3's CompleteMultipartUpload rejects parts that are not in ascending
+        # PartNumber order, and the parts follow the order of the server's
+        # presigned URLs. Today's server emits those in order and sorts the
+        # parts again itself, so this is defence against a server that does not.
+        ordered = sorted(parts, key=lambda part: part["PartNumber"])
         # The endpoint reads $input['parts']; a bare array is read as no parts.
         resp = self._client._session.post(
             url,
-            json={"parts": parts},
+            json={"parts": ordered},
             headers=headers,
             timeout=self._client._timeout,
         )
@@ -625,6 +650,15 @@ class TusUploader:
                 f"{file_size} bytes at a part size of {part_size} needs "
                 f"{expected_parts}. Refusing to upload {path.name!r} — the "
                 f"stored object would not match the file."
+            )
+        # The right count is not enough: a repeated part number means another
+        # part of the file is never sent, and the byte counts can still add up.
+        part_numbers = sorted(entry["partNumber"] for entry in presigned_urls)
+        if part_numbers != list(range(1, expected_parts + 1)):
+            raise SapiError(
+                f"The server's presigned URLs are for parts {part_numbers}, not "
+                f"parts 1 to {expected_parts}. Refusing to upload {path.name!r} "
+                f"— the stored object would not match the file."
             )
 
         parts: list[dict[str, Any]] = []
@@ -748,8 +782,10 @@ class TusUploader:
         """
         MIME type for a file, used for the TUS ``filetype`` metadata.
 
-        The table above wins where it has an entry; everything else falls back
-        to :mod:`mimetypes`, which knows far more extensions than the table.
+        The table above wins where it has an entry, so the answer for those
+        extensions is the same on every host and Python version. Everything
+        else falls back to :mod:`mimetypes`, which knows far more extensions
+        but answers differently depending on the host's MIME database.
         """
         explicit = self._CONTENT_TYPES.get(path.suffix.lower())
         if explicit:
